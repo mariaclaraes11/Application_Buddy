@@ -1,2 +1,15 @@
+# Agent Framework for multi-agent orchestration (preview version required)
+agent-framework-azure-ai --pre
+
+# Azure AI integration
+azure-ai-projects
+azure-identity
+
+# Additional utilities
+python-dotenv
+pydantic
+pydantic-settings
+
+# Original dependencies  
 openai
 
