@@ -1,0 +1,48 @@
+Clara Espírito Santo 
+Lisbon, Portugal | +351 915608193 | claire.esanto@gmail.com | linkedin.com/in/mariaclaraes
+Work Experience
+ 
+Microsoft Netherlands – Cloud Solution Architect | Intern	                                                                      Sep. 2025 – Present
+•	Developing a GenAI app for LinkedIn based application using Azure AI Foundry and Agent Framework SDK.
+•	Designing Ticket Sentiment Analysis to classify customer satisfaction using Azure AI Foundry with Model Fine-tuning.
+•	Lead and organized events as part of the Boost intern committee supporting team bonding and charitable outreach.
+•	Engaged in the educational Dream Space Champions Community, supporting event planning for younger generations.
+
+Academic Tutor for IB Mathematics | Remote	                                                                                      Feb. 2022 – May 2025 
+•	Conducted private one-on-one classes for IB (HL and SL) and GCSE Mathematics. Mentored students for 3+ years.
+
+Education
+ 
+Technical University of Delft - Second Year of MSc Cognitive Robotics                                Aug. 2024 – Sep. 2026 (Pred.)
+•	Main areas of interest covered were Machine learning, Human-Robot Interaction, Machine Perception with Python and Robot Software Practicals with C++. Additionally, electives in Ready to Startup (6-month YESDelft! For a AI security camera vigilance startup),  C++ Programming, Release Engineering for ML Ops with Kubernetes and Docker.
+•	Key Projects: Pedestrian detection using machine perception and YOLOv4 in Python; MPC for drone trajectory optimization with A* path planning; simulated ROS2-based autonomous vehicle navigation through cone courses with integrated pedestrian detection; CNN models for image-based path optimization; and Docker App Deployment.
+University of Twente - BSc Mechanical Engineering                                                    			Aug.2021 – Jul.2024 
+•	Average Grade of 7.82/10
+•	Machine-Learning- based thesis, "Physical-Informed Neural Networks for Informed Sensing". Using Python to model the differential-equation-based Neural Network to model human gait through an Inversed Pendulum Model. Graded 8.2/10
+•	Lead 3 final projects including Mechanic design and analysis of a Dynamics with Systems and Control application on design of EDM machine chatter tracking (award winning) and Production Management Factory Plan.
+
+Uni. Politécnica de Madrid- ETSIDI	- Exchange Semestre					           Sep.2023 – Feb. 2024 
+•	“Basic Mathematical Concepts of Cartography” dissertation paper (TFG) on differential geometry. Graded an 8.5/10.
+•	"Internet of Things" Product Project; interactive sunrise alarm with MQTT email notifications, interactive motion sensors and HTML user application, using Python and Raspberry Pi.  Graded a 10/10.
+
+St Julian’s International School – Internation Baccalaureate Diploma & IGCSEs                               Sep. 2013 – May. 2021 
+•	IB: Overall - 41/45. Student Ambassador
+•	Physics Extended Essay “How does a ramp’s angle of elevation affect the average velocity and magnet braking?” Graded A 
+
+Certifications, Skills & Languages
+ 
+Certifications: AZ-900 Azure Fundamentals (2025), AI-900 AI Fundamentals (2025)
+
+Languages: Portuguese (native), English (fluent), Spanish (Working Proficiency), Mandarin (HSK 1), French (basic)
+
+Programming & AI Frameworks: Azure Cloud, Kubernetes, Docker, Azure AI Foundry, Copilot Studio, Python (PyTorch, TensorFlow, Pandas, NumPy, Keras), SQL (SQLite), MATLAB, C++, Scikit-learn, OpenCV, YOLO (computer vision), ROS, Git/Github, Linux (Ubuntu),  RasberryPi , Rviz, Gazebo, Solidworks, MS Suite, Adobe Photoshop, APIs
+ 
+Volunteering 
+Stitching Nuestra Casa									          Sept. 2025 – Nov. 2025
+•	Orchestrating and leading a workshop to teach robotics and programming with Micro:Bit to 8-12 year olds for a Latin female-led community, with the support of Codeerschool and DreamSpace
+		
+The Connection Project & Safe Campus Initiative                                                                                March. 2024 – Present  
+•	Active volunteer designing and delivering workshops that promote healthy workloads, safe project spaces, and better boundary communication in technical fields
+
+Media Manager and Member of Amnesty International at University of Twente	                                Feb. 2022 – Mar. 2024 
+•	Managed the multiple media pages of the Amnesty International team at University of Twente. Created interactive posters for events, informative booklets and captivating Instagram posts.

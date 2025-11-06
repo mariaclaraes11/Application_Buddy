@@ -1,0 +1,74 @@
+Logo da empresa Unbabel
+Unbabel
+Compartilhar
+Exibir mais opções
+Site Reliability Engineering Intern 
+Lisboa, Portugal · Anunciada novamente há 1 semana · 92 pessoas clicaram em Candidatar-se
+Promovida por recrutador · Respostas gerenciadas fora do LinkedIn
+
+
+ Híbrido
+Corresponde às suas preferências de vaga e o tipo de local de trabalho é Híbrido.
+
+ Estágio
+Corresponde às suas preferências de vaga e o tipo de vaga é Estágio.
+
+  6 de 10 correspondência(s) de competências 
+Corresponde às suas preferências de vaga e o tipo de vaga é {}.
+
+Candidatar-se
+
+Salvar
+Salvar Site Reliability Engineering Intern  na Unbabel
+Site Reliability Engineering Intern
+Unbabel · Lisboa, Portugal (Híbrido)
+
+Candidatar-se
+
+Salvar
+Salvar Site Reliability Engineering Intern  na Unbabel
+Exibir mais opções
+Veja como você se compara a mais 92 pessoas que clicaram em Candidate-se
+Acesse insights exclusivos sobre candidatos, veja vagas sobre as quais você tem mais chances de receber resposta e muito mais.
+
+Reative o Premium
+Sobre a vaga
+We are seeking a motivated and talented Site Reliability Engineer (SRE) Intern to join our team. As an SRE Intern, you will have the opportunity to work alongside experienced engineers to ensure the reliability, availability, and performance of our systems and services. You will gain hands-on experience in maintaining and improving the infrastructure that supports our applications, learning best practices in system design, automation, and monitoring.
+
+
+Responsibilities
+
+Collaborate with the SRE team to monitor and maintain the health of our infrastructure and applications.
+Assist in the development and implementation of tools and scripts to automate routine tasks and improve system reliability.
+Help troubleshoot and resolve issues related to system performance, reliability, and scalability.
+Contribute to the documentation of processes, procedures, and best practices.
+Support the deployment and management of cloud-based infrastructure using infrastructure-as-code principles.
+Work with engineering teams to ensure new features and services are reliable and scalable from day one.
+
+
+Must have
+
+Currently pursuing or recently completed a degree in Computer Science, Engineering, or a related field.
+Basic understanding of Linux/Unix systems and command-line tools.
+Familiarity with programming languages such as Python, Go, or Shell scripting.
+Understanding of networking concepts and protocols.
+Interest in cloud computing and experience with cloud providers (AWS, Azure, Google Cloud) is a plus.
+Strong problem-solving skills and the ability to work well in a team environment.
+Excellent communication skills, both written and verbal.
+Eagerness to learn and adapt to new technologies and challenges.
+
+
+Nice to have
+
+Experience with infrastructure-as-code with tools such as Terraform.
+Knowledge of containerization technologies like Docker and Kubernetes.
+Familiarity with monitoring and logging tools such as Prometheus, Grafana, or the ELK stack.
+Basic knowledge of CI/CD pipelines and tools such as Jenkins, GitLab CI, or CircleCI.
+
+
+
+
+About Unbabel
+
+The company’s language operations platform blends advanced artificial intelligence with human editors, for fast, efficient, high-quality translations that get smarter over time. Unbabel integrates seamlessly in any channel so that agents can deliver consistent multilingual support from within their existing workflows. Making it easy for enterprises to grow into new markets and build seamless customer experiences in every corner of the world.
+Based in San Francisco, California, Unbabel works with leading customer support and marketing teams at brands such as Facebook, Microsoft, Booking, and Under Armour to communicate effortlessly with customers around the world, no matter what language they speak.
