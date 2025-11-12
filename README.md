@@ -5,31 +5,48 @@ A sophisticated CV/Job matching system powered by Microsoft Agent Framework and 
 ## Purpose
 
 **For Job Applicants Only** - This tool helps candidates:
-- Analyze their CV against job requirements
+- Analyze their CV against job requirements  
 - Understand their strengths and gaps
 - Get personalized application advice
 - Make informed decisions about whether to apply
 - Avoid mass-applying to unsuitable positions
 
+## 🚀 Quick Start
 
+### 1. Setup Your Files
+```bash
+# Fill in your CV
+text_examples/my_cv.txt
+
+# Fill in job descriptions  
+text_examples/job_descriptions.txt
+```
+
+### 2. Run Analysis
+```bash
+python main_file_based.py
+```
+
+That's it! The system automatically reads your files and provides complete analysis with optional interactive Q&A.
 
 ##  Available Scripts
 
-### 1. `main.py` - **Agent Orchestrator Mode** (Recommended but can't get it to work)
-**What it does:** Uses Agent Framework's GroupChat for automatic multi-agent coordination
-- Agents automatically decide when to pass control to each other
-- Full streaming conversation between agents
-- Most sophisticated orchestration approach
-- Ideal for complex analysis scenarios
+### 1. `main_file_based.py` - **File-Based System** ⭐ (Recommended)
+**What it does:** Automatically reads CV and job descriptions from files
+- No manual copy-pasting required
+- Supports multiple job descriptions
+- Full interactive Q&A when gaps are detected  
+- Clean, simplified orchestrator
+- Best user experience
 
 **Usage:**
 ```bash
-python main.py
+python main_file_based.py
 ```
 
-### 2. `main_interactive.py` - **Interactive Q&A Mode** (only way icna get QA to be an actual QA without skipping user's input)
-**What it does:** Provides real human-agent conversation when gaps are detected
-- Analyzes CV vs job first
+### 2. `main_interactive.py` - **Manual Input with Q&A**
+**What it does:** Manual input with real human-agent conversation
+- Requires copy-pasting CV and job description
 - If critical gaps found, starts natural conversation with user
 - User can actually respond to questions and have back-and-forth dialogue
 - More personal and conversational approach
@@ -37,17 +54,6 @@ python main.py
 **Usage:**
 ```bash
 python main_interactive.py
-```
-
-### 3. `test_vague_job.py` - **Testing Script For Vgaue Job Scenario**
-**What it does:** Tests how the system handles vague job postings
-- Uses sample CV and deliberately vague job description
-- Helps validate the analysis logic
-- Useful for development and debugging
-
-**Usage:**
-```bash
-python test_vague_job.py
 ```
 
 ##  Multi-Agent Architecture
@@ -166,35 +172,36 @@ Create a `.env` file in the project root with these variables:
    source .venv/bin/activate  # On Windows: .venv\Scripts\activate
    ```
 
-2. **Run the main application:**
+2. **Run the file-based application:**
    ```bash
-   python main.py
+   python main_file_based.py
    ```
 
 3. **What happens on first run:**
-   - ✅ Agents are automatically created in your Azure AI Foundry project
-   - ✅ Agent Framework GroupChat orchestration is set up
+   - ✅ Agents are automatically created in your Azure AI Foundry project  
+   - ✅ CV and job descriptions are read from text files automatically
    - ✅ All conversations appear in Foundry dashboard for monitoring
-   - ✅ No separate deployment step needed!
+   - ✅ No manual copy-pasting required!
 
 4. **Usage:**
-   - Paste CV text when prompted (it will ask if you want to past all in one line, YES YOU DO)
-   - Paste job description when prompted
+   - System automatically loads your CV from `text_examples/my_cv.txt`
+   - System automatically loads job descriptions from `text_examples/job_descriptions.txt`  
    - System analyzes and provides recommendation
+   - Interactive Q&A starts if gaps are detected
    - View results in both terminal and Azure AI Foundry dashboard
 
 ### Choosing the Right Script
 
-**Use `main.py` when:**
-- You want the most sophisticated analysis
-- You prefer automatic agent coordination
-- You want to see streaming agent conversations
-- You don't need to interact during the Q&A phase
+**Use `main_file_based.py` when:** ⭐ (Recommended for daily use)
+- You want automatic file reading (no copy-pasting)
+- You have multiple job descriptions to analyze
+- You want the most user-friendly experience  
+- You want both analysis and interactive Q&A
 
 **Use `main_interactive.py` when:**
+- You prefer to manually input CV and job descriptions
 - You want to have real conversations with the Q&A agent
-- You prefer more control over the analysis process
-- You want to provide additional context through dialogue
+- You want more control over the analysis process
 - You want a more personal, conversational experience
 
 
