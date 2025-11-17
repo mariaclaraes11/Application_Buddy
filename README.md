@@ -22,63 +22,149 @@ text_examples/my_cv.txt
 text_examples/job_descriptions.txt
 ```
 
-### 2. Run Analysis
+### 2. Choose Your Experience
 ```bash
-python main_file_based.py
+# MVP Version - Proven, stable experience
+python main_mvp.py
+
+# WorkflowBuilder V1 - Enhanced with streaming conversation
+python main_workflow_v1.py
 ```
 
 That's it! The system automatically reads your files and provides complete analysis with optional interactive Q&A.
 
-##  Available Scripts
+## 📋 Available Implementations
 
-### 1. `main_file_based.py` - **File-Based System** ⭐ (Recommended)
-**What it does:** Automatically reads CV and job descriptions from files
-- No manual copy-pasting required
-- Supports multiple job descriptions
-- Full interactive Q&A when gaps are detected  
-- Clean, simplified orchestrator
-- Best user experience
+### 1. `main_mvp.py` - **MVP Version** ✅ (Stable & Proven)
+**What it does:** Original proven implementation with Group Chat orchestration
+- Automatic file-based CV and job loading
+- Multi-job description support  
+- Interactive Q&A when gaps are detected
+- Clean Group Chat orchestrator pattern
+- Battle-tested and reliable
 
 **Usage:**
 ```bash
-python main_file_based.py
+python main_mvp.py
 ```
 
-### 2. `main_interactive.py` - **Manual Input with Q&A**
-**What it does:** Manual input with real human-agent conversation
-- Requires copy-pasting CV and job description
-- If critical gaps found, starts natural conversation with user
-- User can actually respond to questions and have back-and-forth dialogue
-- More personal and conversational approach
+### 2. `main_workflow_v1.py` - **WorkflowBuilder Version** ⭐ (Enhanced Experience)
+**What it does:** Modern Agent Framework WorkflowBuilder with enhanced features
+- **Letter-by-letter streaming** for natural conversation experience
+- **Thread-based conversation memory** - no repeated questions
+- **Enhanced role understanding** - helps you understand what jobs actually involve
+- **Improved Q&A targeting** - focuses on exploring identified gaps
+- Pure WorkflowBuilder orchestration with conditional routing
+- Same reliable analysis as MVP with better user experience
+
+**Usage:**
+```bash
+python main_workflow_v1.py
+```
+
+**New Features in V1:**
+- ✨ **Streaming responses** - Career advisor types responses like a real person
+- 🧠 **Conversation memory** - Agent remembers what you've discussed
+- 🎯 **Gap-focused Q&A** - Naturally explores your missing skills through stories
+- 📚 **Role education** - Explains what jobs actually involve day-to-day
+- 🔗 **Better insights** - "New Things Found During Our Conversation" section
+
+### 3. `main_interactive.py` - **Manual Input with Q&A** 
+**What it does:** Original manual conversation approach
+- Manual CV and job description entry
+- Interactive Q&A conversation
+- Good for single job analysis
 
 **Usage:**
 ```bash
 python main_interactive.py
 ```
 
-##  Multi-Agent Architecture
+### 4. `main.py` - **Basic Demo** 
+**What it does:** Original demonstration script
+- Basic agent interaction example
+- No file loading or Q&A features
 
-The system deploys 3 specialized agents to Azure AI Foundry:
+**Usage:**
+```bash
+python main.py
+```
 
-**CV Job Analyzer Agent** - Technical analysis specialist
-- Extracts explicit requirements from job postings
-- Matches CV evidence against requirements with structured JSON output
-- Identifies gaps with priorities (high/med/low) and requirement types (must/nice)
-- Computes preliminary fit scores (0-100)
-- Handles vague job postings by defaulting to "must have" requirements
+## 🏗️ Architecture
 
-**CV Job Q&A Agent** - Conversational career advisor
-- Conducts natural, friendly conversations with applicants
-- Discovers hidden strengths not obvious from CV
-- Explores working style, interests, and motivations
-- Uses conversational techniques instead of direct questioning
-- Provides insights that inform the final recommendation
+### Agent Definitions (`src/agents/agent_definitions.py`)
+Three specialized agents work together:
 
-**CV Job Recommendation Agent** - Application advisor
-- Provides applicant-focused recommendations (STRONG APPLY/APPLY/CAUTIOUS APPLY/SKIP)
-- Suggests how to strengthen applications
-- Offers realistic expectations about competitiveness
-- Gives actionable next steps for career development
+1. **CV Analysis Agent** - Extracts skills and experiences from your CV
+2. **Job Analysis Agent** - Analyzes job requirements and expectations  
+3. **Recommendation Agent** - Synthesizes insights and provides personalized advice
+
+### Orchestration Patterns
+
+**MVP (Group Chat):**
+- Uses Microsoft Agent Framework Group Chat pattern
+- Sequential agent execution with message passing
+- Proven and reliable orchestration
+
+**WorkflowBuilder V1:**
+- Pure Microsoft Agent Framework WorkflowBuilder
+- `@executor` functions with conditional routing
+- Enhanced user experience features:
+  - Thread-based conversation memory
+  - Streaming responses with `agent.run_stream()`
+  - Dynamic routing based on Q&A needs
+
+## 📁 File Structure
+
+```
+Application_Buddy/
+├── main_mvp.py                 # MVP Group Chat implementation
+├── main_workflow_v1.py         # WorkflowBuilder V1 with streaming
+├── main_interactive.py         # Original manual conversation
+├── main.py                     # Basic demo
+├── requirements.txt            # Dependencies
+└── src/
+    ├── agents/
+    │   ├── agent_definitions.py    # Enhanced agent prompts
+    │   └── optimized_orchestrator.py  # MVP orchestrator
+    └── config.py               # Configuration
+```
+
+## 💡 Usage Tips
+
+**Which version should you use?**
+- 🎯 **New users:** Start with `main_workflow_v1.py` for the best experience
+- 🛡️ **Stability-first:** Use `main_mvp.py` for proven reliability  
+- 📝 **Single job focus:** Try `main_interactive.py` for hands-on conversation
+- 🔬 **Development/Demo:** Use `main.py` for basic agent testing
+
+**Preparing your files:**
+- **CV file:** Include your complete work history, skills, education, projects
+- **Job descriptions:** Copy full job postings, not just bullet points
+- **Multiple jobs:** Separate job descriptions with clear headers in the file
+
+## 🔧 Technical Details
+
+**Dependencies:** Microsoft Agent Framework, Azure AI Foundry
+**Python Version:** 3.8+
+**AI Models:** Uses Azure-hosted models via Agent Framework
+**File Support:** Plain text files for CV and job descriptions
+
+## 🤝 Contributing
+
+This project uses Microsoft Agent Framework best practices:
+- Agent prompts in dedicated definition files
+- Clean separation of orchestration and agent logic  
+- Thread-based conversation memory for Q&A continuity
+- Streaming responses for enhanced user experience
+
+## 🎯 Example Workflow
+
+1. **Setup:** Fill `text_examples/my_cv.txt` and `text_examples/job_descriptions.txt`
+2. **Analysis:** Run `python main_workflow_v1.py`  
+3. **Review:** Get comprehensive match analysis
+4. **Q&A:** If gaps found, engage in streaming conversation about your experiences
+5. **Decision:** Receive personalized recommendation on whether to apply
 
 ## Table of Contents
 
