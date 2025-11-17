@@ -156,9 +156,9 @@ async def analyze_single_job(orchestrator, cv_content, job):
             # Interactive conversation loop
             conversation_complete = False
             conversation_turns = 0
-            max_turns = 10  # Prevent infinite conversations
+            # Trust the Q&A agent to end naturally - no artificial limits
             
-            while not conversation_complete and conversation_turns < max_turns:
+            while not conversation_complete:
                 print(f"\nYour response (or type 'done' to finish):")
                 user_input = input().strip()
                 
@@ -171,20 +171,15 @@ async def analyze_single_job(orchestrator, cv_content, job):
                     qna_response = await orchestrator.continue_qna(user_input)
                     print(f"\nCareer Advisor: {qna_response}")
                     
-                    # Check if the agent indicated conversation is complete
-                    if any(phrase in qna_response.lower() for phrase in [
-                        'ready to apply', 'covered everything', 'final assessment', 
-                        'wrap up', 'analysis complete', 'recommendation', 'that concludes'
-                    ]):
+                    # Check if the agent provided a final JSON assessment (natural ending)
+                    if ('discovered_strengths' in qna_response and 'conversation_notes' in qna_response) or \
+                       ('final assessment' in qna_response.lower()) or \
+                       ('{' in qna_response and '}' in qna_response and 'discovered_strengths' in qna_response):
                         print("\nQ&A session complete!")
                         qna_summary = qna_response
                         conversation_complete = True
                     
                     conversation_turns += 1
-            
-            if conversation_turns >= max_turns:
-                print("\nQ&A session reached maximum length - moving to recommendation")
-                qna_summary = "Extended conversation completed - moving to final recommendation"
                 
         else:
             print("\nAnalysis shows a strong fit - no additional questions needed")

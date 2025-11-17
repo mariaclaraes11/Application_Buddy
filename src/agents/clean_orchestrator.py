@@ -1,10 +1,12 @@
 """
-Clean Orchestrator - Single purpose, no duplication
+Clean Orchestrator - Local Agents Version
 
 This orchestrator does ONE thing well:
-- Takes CV + Job Description
+- Takes CV + Job Description  
 - Runs analysis → optional Q&A → recommendation
 - Returns complete results
+
+Uses LOCAL Agent Framework agents (no Azure dependencies)
 """
 
 import asyncio
@@ -13,9 +15,8 @@ import logging
 from typing import Dict, Any
 
 from agent_framework import ChatAgent
-from agent_framework.azure import AzureAIAgentClient
-from azure.identity.aio import DefaultAzureCredential
-from azure.ai.projects.aio import AIProjectClient
+from agent_framework.azure import AzureOpenAIChatClient
+from azure.identity import DefaultAzureCredential  # Synchronous version
 
 from ..config import Config
 from .agent_definitions import AgentDefinitions
@@ -25,68 +26,61 @@ logger = logging.getLogger(__name__)
 
 class CleanOrchestrator:
     """
-    Simple, clean orchestrator with no duplication.
+    Simple, clean orchestrator with local agents.
     Does ONE thing: CV + Job → Analysis → Optional Q&A → Recommendation
     """
     
     def __init__(self, config: Config):
         self.config = config
-        self.foundry_agents = {}
-        self.project_client = None
-        self.credential = None
+        self.agents = {}
     
-    async def _setup_agents(self) -> Dict[str, Any]:
-        """Create or reuse agents in Azure AI Foundry."""
-        if self.foundry_agents:
-            return self.foundry_agents
+    async def _setup_agents(self) -> Dict[str, ChatAgent]:
+        """Create local agents using Agent Framework."""
+        if self.agents:
+            return self.agents
             
-        # Initialize Azure clients
-        if not self.credential:
-            self.credential = DefaultAzureCredential()
-            
-        if not self.project_client:
-            self.project_client = AIProjectClient(
-                endpoint=self.config.azure_ai_foundry_endpoint,
-                credential=self.credential
-            )
+        logger.info("Setting up local agents...")
         
-        logger.info("Setting up agents...")
+        # Get agent definitions
         agents_config = AgentDefinitions.get_all_agents()
         
-        # Get existing agents
-        existing_agents = []
-        async for agent in self.project_client.agents.list_agents():
-            existing_agents.append(agent)
-        existing_by_name = {agent.name: agent for agent in existing_agents}
+        # Extract Azure endpoint from Foundry endpoint
+        # From: https://smart-application-buddy.services.ai.azure.com/api/projects/firstProject
+        # To: https://smart-application-buddy.services.ai.azure.com/
+        azure_endpoint = self.config.azure_ai_foundry_endpoint.split('/api/projects/')[0]
         
-        # Create or reuse each agent
-        created_agents = {}
+        # Create async credential
+        credential = DefaultAzureCredential()
+        
+        # Create local agents
         for agent_type, config in agents_config.items():
-            if config["name"] in existing_by_name:
-                logger.info(f"Reusing {config['name']}")
-                created_agents[agent_type] = existing_by_name[config["name"]]
-            else:
-                logger.info(f"Creating {config['name']}")
-                created_agents[agent_type] = await self.project_client.agents.create_agent(
-                    model=self.config.model_deployment_name,
-                    name=config["name"],
-                    instructions=config["instructions"],
-                    description=config["description"]
-                )
-        
-        self.foundry_agents = {**created_agents, "project_client": self.project_client}
-        logger.info("Agents ready")
-        return self.foundry_agents
-    
-    def _create_agent(self, agent_type: str) -> ChatAgent:
-        """Create a ChatAgent connected to Foundry."""
-        return ChatAgent(
-            name=agent_type,
-            chat_client=AzureAIAgentClient(
-                project_client=self.foundry_agents["project_client"],
-                agent_id=self.foundry_agents[agent_type].id
+            logger.info(f"Creating local {config['name']} agent")
+            
+            # Create Azure OpenAI chat client pointing to your deployment
+            chat_client = AzureOpenAIChatClient(
+                deployment_name=self.config.model_deployment_name,
+                endpoint=azure_endpoint,
+                api_version=self.config.api_version,
+                credential=credential,
             )
-        )
+            
+            # Create agent with instructions
+            agent = ChatAgent(
+                name=config["name"],
+                chat_client=chat_client,
+                instructions=config["instructions"]
+            )
+            
+            self.agents[agent_type] = agent
+        
+        logger.info(f"Created {len(self.agents)} local agents")
+        return self.agents
+    
+    def _get_agent(self, agent_type: str) -> ChatAgent:
+        """Get a local agent by type."""
+        if agent_type not in self.agents:
+            raise ValueError(f"Agent type '{agent_type}' not found. Available: {list(self.agents.keys())}")
+        return self.agents[agent_type]
     
     def _should_run_qna(self, analysis_text: str) -> bool:
         """Decide if Q&A is needed based on analysis."""
@@ -135,7 +129,7 @@ class CleanOrchestrator:
             
             # Step 1: Analysis
             logger.info(" Running analysis...")
-            analyzer = self._create_agent("analyzer")
+            analyzer = self._get_agent("analyzer")
             analysis_result = await analyzer.run(f"""**CANDIDATE CV:**
 {cv_text}
 
@@ -149,7 +143,7 @@ class CleanOrchestrator:
             # Step 3: Optional Q&A
             if needs_qna:
                 logger.info(" Running Q&A...")
-                qna_agent = self._create_agent("qna")
+                qna_agent = self._get_agent("qna")
                 qna_result = await qna_agent.run(f"""**ANALYSIS:**
 {analysis_text}
 
@@ -164,7 +158,7 @@ class CleanOrchestrator:
             
             # Step 4: Final recommendation
             logger.info(" Generating recommendation...")
-            rec_agent = self._create_agent("recommendation")
+            rec_agent = self._get_agent("recommendation")
             
             rec_prompt = f"""**CV:** {cv_text}
 **JOB:** {job_description}
@@ -211,7 +205,7 @@ class CleanOrchestrator:
         """Compatibility method for interactive workflow."""
         try:
             await self._setup_agents()
-            analyzer = self._create_agent("analyzer")
+            analyzer = self._get_agent("analyzer")
             
             analysis_result = await analyzer.run(f"""**CANDIDATE CV:**
 {cv_text}
@@ -234,7 +228,7 @@ class CleanOrchestrator:
     async def interactive_qna_session(self, analysis_data: dict) -> str:
         """Start interactive Q&A session."""
         try:
-            qna_agent = self._create_agent("qna")
+            qna_agent = self._get_agent("qna")
             
             qna_result = await qna_agent.run(f"""**ANALYSIS:**
 {analysis_data["analysis"]}
@@ -261,7 +255,7 @@ class CleanOrchestrator:
     async def finalize_recommendation(self, analysis_data: dict, qna_summary: str = None) -> str:
         """Generate final recommendation."""
         try:
-            rec_agent = self._create_agent("recommendation")
+            rec_agent = self._get_agent("recommendation")
             
             rec_prompt = f"""**CV:** {analysis_data["cv_text"]}
 **JOB:** {analysis_data["job_description"]}
