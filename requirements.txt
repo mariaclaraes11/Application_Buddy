@@ -13,3 +13,9 @@ pydantic-settings
 # Original dependencies  
 openai
 
+# Agent SDK dependencies
+aiohttp
+microsoft-agents-hosting-aiohttp
+microsoft-agents-hosting-core
+microsoft-agents-authentication-msal
+microsoft-agents-activity
