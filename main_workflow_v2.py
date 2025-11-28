@@ -67,16 +67,12 @@ async def setup_agents(config: Config) -> Dict[str, ChatAgent]:
         
     logger.info("Setting up local agents for WorkflowBuilder executors...")
     
-    # Get agent definitions (same as MVP)
     agents_config = AgentDefinitions.get_all_agents()
     
-    # Extract Azure endpoint (same logic as MVP)
     azure_endpoint = config.azure_ai_foundry_endpoint.split('/api/projects/')[0]
     
-    # Create credential (same as MVP)
     credential = DefaultAzureCredential()
     
-    # Create local agents (identical to MVP)
     for agent_type, agent_config in agents_config.items():
         logger.info(f"Creating local {agent_config['name']} agent")
         
@@ -99,12 +95,8 @@ async def setup_agents(config: Config) -> Dict[str, ChatAgent]:
     return _agents
 
 def should_run_qna(analysis_text: str) -> tuple[bool, int]:
-    """
-    Same Q&A decision logic as MVP's CleanOrchestrator._should_run_qna
-    This ensures identical routing behavior.
-    """
+    
     try:
-        # Same JSON parsing logic as MVP
         if '{' in analysis_text and '}' in analysis_text:
             json_start = analysis_text.find('{')
             json_end = analysis_text.rfind('}') + 1
@@ -116,11 +108,10 @@ def should_run_qna(analysis_text: str) -> tuple[bool, int]:
                 must_have_gaps = [gap for gap in gaps if gap.get('requirement_type') == 'must']
                 score = analysis_data.get('preliminary_score', 0)
                 
-                # Same decision logic as MVP
                 if len(must_have_gaps) > 0:
                     logger.info(f"Missing must-have requirements - Q&A needed")
                     return True, score
-                elif score < 75:
+                elif score < 80:
                     logger.info(f"Low score ({score}) - Q&A needed") 
                     return True, score
                 else:
@@ -130,7 +121,6 @@ def should_run_qna(analysis_text: str) -> tuple[bool, int]:
             except json.JSONDecodeError:
                 pass
         
-        # Fallback: default to Q&A (same as MVP)
         logger.info("Could not parse analysis - defaulting to Q&A")
         return True, 0
         
@@ -138,90 +128,116 @@ def should_run_qna(analysis_text: str) -> tuple[bool, int]:
         logger.warning(f"Error in decision logic: {e} - defaulting to Q&A")
         return True, 0
 
-async def conduct_qna_conversation_direct(analysis_result: AnalysisResult) -> str:
-    """
-    Direct Q&A conversation using agents with proper thread-based conversation state
-    """
-    logger.info("Starting Q&A conversation using direct agent calls...")
-    
-    qna_agent = _agents["qna"]
-    
-    # Create thread for multi-turn conversation state
-    thread = qna_agent.get_new_thread()
-    
-    # Start Q&A with thread (same prompt structure as MVP)
-    qna_response = ""
+async def read_current_gaps(gaps_file_path: str) -> list[str]:
+    """Read and parse current gaps from file."""
+    try:
+        with open(gaps_file_path, 'r') as f:
+            current_gaps = f.read().strip().split('\n')
+        return [gap.strip() for gap in current_gaps if gap.strip()]
+    except FileNotFoundError:
+        return []
+
+async def update_gaps_file(gaps_file_path: str, gaps: list[str]) -> None:
+    """Update gaps file with remaining gaps."""
+    with open(gaps_file_path, 'w') as f:
+        for gap in gaps:
+            f.write(f"{gap}\n")
+
+def detect_termination_question(response: str) -> bool:
+    """Check if response contains a termination question."""
+    termination_phrases = [
+        'anything else about the position',
+        'anything else about your background',
+        'anything else about the role',
+        'anything else about your experience',
+        'anything else you',
+        'before we wrap up'
+    ]
+    return any(phrase in response.lower() for phrase in termination_phrases) and '?' in response
+
+async def get_agent_response(agent: ChatAgent, prompt: str, thread) -> str:
+    """Get streaming response from agent."""
     print(f"\nCareer Advisor: ", end="", flush=True)
-    async for chunk in qna_agent.run_stream(f"""**ANALYSIS:**
-{analysis_result.analysis_json}
-**CV:** {analysis_result.cv_text}
-**JOB:** {analysis_result.job_description}""", thread=thread):
+    response = ""
+    async for chunk in agent.run_stream(prompt, thread=thread):
         if chunk.text:
             print(chunk.text, end="", flush=True)
-            qna_response += chunk.text
-    print()  # New line after streaming complete
+            response += chunk.text
+    print()
+    return response
+
+async def check_validation_status(validation_agent: ChatAgent, current_gaps: list[str], 
+                                conversation_history: list[str], is_termination_attempt: bool = False) -> tuple[bool, list[str]]:
+    """Check validation status and return readiness and updated gaps."""
+    recent_conversation = "\n".join(conversation_history[-4:])
     
-    # Interactive conversation loop with thread continuity
-    conversation_complete = False
+    if is_termination_attempt:
+        validation_input = f"""Current gaps to track:
+{chr(10).join(current_gaps)}
+
+Recent conversation exchange:
+{recent_conversation}
+
+User wants to end conversation. Please provide final readiness assessment."""
+    else:
+        validation_input = f"""Current gaps to track:
+{chr(10).join(current_gaps)}
+
+Recent conversation exchange:
+{recent_conversation}"""
     
-    while not conversation_complete:
-        print(f"\nYour response (or type 'done' to finish):")
-        user_input = input().strip()
+    try:
+        validation_result = await validation_agent.run(validation_input)
+        validation_response = validation_result.messages[-1].text
+        validation_ready = "READY" in validation_response.upper()
         
-        if user_input.lower() in ['done']:
-            # Ask the Q&A agent for final assessment based on conversation using same thread with streaming
-            print("\nGenerating conversation summary...")
-            print("Career Advisor: ", end="", flush=True)
-            qna_summary = ""
-            async for chunk in qna_agent.run_stream("""The user has indicated they're ready to finish the conversation. 
-Based on our entire conversation, please provide your final assessment in JSON format. Consider what you learned about:
-- Skills/experiences that emerged through our conversation that weren't obvious in their CV
-- Ways their background connects to this job that weren't apparent initially  
-- Areas they could develop with learning vs significant barriers
-- Things that should boost their confidence about applying
-- How well they understand the role and their genuine interest
-Provide the assessment in the required JSON format with discovered_strengths, hidden_connections, addressable_gaps, real_barriers, confidence_boosters, growth_areas, role_understanding, genuine_interest, and conversation_notes.""", thread=thread):
-                if chunk.text:
-                    print(chunk.text, end="", flush=True)
-                    qna_summary += chunk.text
-            print()  # New line after streaming complete
-            print("\nQ&A assessment complete!")
-            conversation_complete = True
-        else:
-            # Continue Q&A conversation using same thread for memory with streaming
-            print(f"\nCareer Advisor: ", end="", flush=True)
-            qna_response = ""
-            async for chunk in qna_agent.run_stream(f"User response: {user_input}", thread=thread):
-                if chunk.text:
-                    print(chunk.text, end="", flush=True)
-                    qna_response += chunk.text
-            print()  # New line after streaming complete
+        # Parse validation response and update gaps
+        remaining_gaps = current_gaps.copy()
+        if "REMOVE:" in validation_response:
+            remove_section = validation_response.split("REMOVE:")[1].split("KEEP:")[0] if "KEEP:" in validation_response else validation_response.split("REMOVE:")[1].split("READINESS:")[0]
+            remove_text = remove_section.strip()
             
-            # Check if the agent provided a final JSON assessment (same logic as MVP)
-            if ('discovered_strengths' in qna_response and 'conversation_notes' in qna_response) or \
-               ('final assessment' in qna_response.lower()) or \
-               ('{' in qna_response and '}' in qna_response and 'discovered_strengths' in qna_response):
-                print("\nQ&A session complete!")
-                qna_summary = qna_response
-                conversation_complete = True
+            for gap in current_gaps:
+                if gap in remove_text:
+                    remaining_gaps.remove(gap)
+        
+        return validation_ready, remaining_gaps
+    except Exception as e:
+        logger.warning(f"Validation check failed: {e}")
+        return False, current_gaps
+
+async def handle_termination_attempt(qna_agent: ChatAgent, validation_agent: ChatAgent, 
+                                   user_input: str, conversation_history: list[str],
+                                   gaps_file_path: str, thread) -> tuple[bool, str]:
+    """Handle user termination attempt with validation check."""
+    current_gaps = await read_current_gaps(gaps_file_path)
+    validation_ready, updated_gaps = await check_validation_status(
+        validation_agent, current_gaps, conversation_history, is_termination_attempt=True
+    )
     
-    logger.info("Q&A conversation completed using direct agent calls with thread")
-    return qna_summary
+    if validation_ready and len(updated_gaps) == 0:
+        # Proceed with final assessment
+        print("\nGenerating final assessment...")
+        summary = await get_agent_response(qna_agent, "Please provide your final assessment based on our conversation.", thread)
+        return True, summary
+    else:
+        # Continue conversation - gaps remain or validation not ready
+        print(f"\nCareer Advisor: Actually, let me ask you a bit more about a few things before we wrap up...")
+        conversation_history.append(f"User: {user_input}")
+        
+        continue_prompt = f"The user wants to end the conversation, but we still have some important topics to explore. Please continue the conversation naturally to address remaining gaps: {', '.join(updated_gaps) if updated_gaps else 'general understanding'}."
+        response = await get_agent_response(qna_agent, continue_prompt, thread)
+        conversation_history.append(f"Advisor: {response}")
+        
+        await update_gaps_file(gaps_file_path, updated_gaps)
+        return False, ""
 
 async def conduct_interactive_qna_with_validation(analysis_result: AnalysisResult) -> str:
-    """
-    V2 Enhancement: Interactive Q&A with validation agent monitoring gaps
-    User has interactive conversation while validation agent monitors gaps file
-    """
-    logger.info("Starting interactive Q&A with validation monitoring...")
-    
-    # Initialize gaps file for validation agent to monitor
     gaps_file_path = "gaps_current.json"
     
-    # Clean JSON from analyzer output (remove markdown if present)
+    # Parse analysis and extract gaps
     analysis_json = analysis_result.analysis_json
     if "```json" in analysis_json:
-        # Extract JSON from markdown code block
         json_start = analysis_json.find("{")
         json_end = analysis_json.rfind("}") + 1
         analysis_json = analysis_json[json_start:json_end]
@@ -230,166 +246,98 @@ async def conduct_interactive_qna_with_validation(analysis_result: AnalysisResul
         analysis_data = json.loads(analysis_json) if analysis_json else {}
     except json.JSONDecodeError as e:
         logger.warning(f"Failed to parse analysis JSON: {e}")
-        logger.warning(f"Raw analysis: {analysis_json[:200]}...")
         analysis_data = {"gaps": []}
     
-    gaps_list = []
+    # Initialize gaps file
+    gaps_list = [gap.get('name', str(gap)) for gap in analysis_data.get('gaps', [])]
+    await update_gaps_file(gaps_file_path, gaps_list)
     
-    # Extract gaps from analysis
-    for gap in analysis_data.get('gaps', []):
-        gaps_list.append(gap.get('name', str(gap)))
-    
-    # Add critical topics if mentioned in job posting
-    job_lower = analysis_result.job_description.lower()
-    if any(keyword in job_lower for keyword in ['visa', 'work authorization', 'location', 'remote', 'relocation']):
-        gaps_list.append("Work authorization/location")
-    
-    # Write initial gaps file
-    with open(gaps_file_path, 'w') as f:
-        for gap in gaps_list:
-            f.write(f"{gap}\n")
-    
-    # Setup agents
+    # Setup agents and conversation
     qna_agent = _agents["qna"]
     validation_agent = _agents["validation"]
-    
-    # Create thread for Q&A conversation state
     thread = qna_agent.get_new_thread()
     
-    # Start Q&A with initial analysis
-    qna_response = ""
-    print(f"\nCareer Advisor: ", end="", flush=True)
-    async for chunk in qna_agent.run_stream(f"""**ANALYSIS:**
+    # Initial agent response
+    initial_prompt = f"""**ANALYSIS:**
 {analysis_result.analysis_json}
 **CV:** {analysis_result.cv_text}
-**JOB:** {analysis_result.job_description}""", thread=thread):
-        if chunk.text:
-            print(chunk.text, end="", flush=True)
-            qna_response += chunk.text
-    print()  # New line after streaming complete
+**JOB:** {analysis_result.job_description}"""
     
-    # Interactive conversation loop with validation monitoring
+    qna_response = await get_agent_response(qna_agent, initial_prompt, thread)
+    
+    # Main conversation loop
     conversation_complete = False
     conversation_history = [qna_response]
+    agent_asked_termination_question = False
+    termination_phrases = ['nothing else', 'that\'s all', 'that\'s it', 'nothing more', 'no thanks', 'all good', 'im ready', 'i\'m ready', 'ready', 'nope all good', 'nope', 'no']
     
     while not conversation_complete:
         print(f"\nYour response (or type 'done' to finish):")
         user_input = input().strip()
         
-        if user_input.lower() in ['done']:
-            # User wants to finish - end conversation naturally
+        if user_input.lower() == 'done':
             print("\nQ&A session complete!")
-            qna_summary = "User chose to end conversation. Based on conversation: " + "\n".join(conversation_history)
-            conversation_complete = True
+            return "User chose to end conversation. Based on conversation: " + "\n".join(conversation_history)
+        
+        # Get agent response
+        user_response = await get_agent_response(qna_agent, f"User response: {user_input}", thread)
+        
+        # Check for termination attempt
+        if user_input.lower() in termination_phrases and agent_asked_termination_question:
+            try:
+                is_complete, summary = await handle_termination_attempt(
+                    qna_agent, validation_agent, user_input, conversation_history, gaps_file_path, thread
+                )
+                if is_complete:
+                    conversation_complete = True
+                    qna_summary = summary
+                    continue
+                else:
+                    # Termination was rejected, reset flag
+                    agent_asked_termination_question = False
+            except Exception as e:
+                logger.warning(f"Final validation check failed: {e} - allowing conversation to end")
+                summary = await get_agent_response(qna_agent, "Please provide your final assessment based on our conversation.", thread)
+                conversation_complete = True
+                qna_summary = summary
+                continue
         else:
-            # Continue conversation
-            print(f"\nCareer Advisor: ", end="", flush=True)
-            user_response = ""
-            async for chunk in qna_agent.run_stream(f"User response: {user_input}", thread=thread):
-                if chunk.text:
-                    print(chunk.text, end="", flush=True)
-                    user_response += chunk.text
-            print()
-            
+            # Normal conversation flow
             conversation_history.append(f"User: {user_input}")
             conversation_history.append(f"Advisor: {user_response}")
             
-            # Check with validation agent if we should continue
-            recent_conversation = "\n".join(conversation_history[-4:])  # Last 2 exchanges
+            # Check if agent asked termination question
+            agent_asked_termination_question = detect_termination_question(user_response)
             
-            # Read current gaps file content
-            try:
-                with open(gaps_file_path, 'r') as f:
-                    current_gaps = f.read().strip().split('\n')
-                current_gaps = [gap.strip() for gap in current_gaps if gap.strip()]
-            except FileNotFoundError:
-                current_gaps = []
+            # Run validation check and update gaps
+            current_gaps = await read_current_gaps(gaps_file_path)
+            validation_ready, remaining_gaps = await check_validation_status(
+                validation_agent, current_gaps, conversation_history
+            )
             
-            validation_input = f"""Current gaps to track:
-{chr(10).join(current_gaps)}
-
-Recent conversation exchange:
-{recent_conversation}
-
-TASK: Analyze the conversation to see if the user has addressed any of the gaps listed above.
-
-For each gap, determine if the user has provided relevant information, experience, or discussion that addresses that specific gap. Look for:
-- Direct mentions of the gap topic
-- Related experience or skills 
-- Plans to learn or develop in that area
-- Any discussion that shows knowledge or capability in that domain
-
-Respond in this exact format:
-REMOVE: [list the specific gap names that were addressed in the conversation]
-KEEP: [list the specific gap names that still need discussion]
-DECISION: CONTINUE/STOP - [brief reasoning]
-
-Be specific - use the exact gap names from the list above."""
+            await update_gaps_file(gaps_file_path, remaining_gaps)
             
-            try:
-                validation_result = await validation_agent.run(validation_input)
-                validation_response = validation_result.messages[-1].text
+            # Suggest graceful ending if all gaps covered
+            if validation_ready and len(remaining_gaps) == 0:
+                print(f"\n💭 Note: All topics covered, conversation could wrap up naturally if Q&A agent feels complete")
                 
-                # Parse validation response and update gaps file
-                remaining_gaps = current_gaps.copy()
-                if "REMOVE:" in validation_response:
-                    # Extract the text after "REMOVE:"
-                    remove_section = validation_response.split("REMOVE:")[1].split("KEEP:")[0] if "KEEP:" in validation_response else validation_response.split("REMOVE:")[1].split("DECISION:")[0]
-                    remove_text = remove_section.strip()
-                    
-                    # Let the validation agent decide which exact gaps to remove
-                    for gap in current_gaps:
-                        if gap in remove_text:
-                            remaining_gaps.remove(gap)
+                ending_response = await get_agent_response(
+                    qna_agent, 
+                    "The conversation has covered all the important topics. Consider asking if there's anything else the user would like to discuss before providing your final assessment.", 
+                    thread
+                )
                 
-                # Update gaps file with remaining gaps
-                with open(gaps_file_path, 'w') as f:
-                    for gap in remaining_gaps:
-                        f.write(f"{gap}\n")
-                
-                # Check if validation says to stop
-                if "STOP" in validation_response.upper():
-                    print(f"\n🔍 Validation Agent: {validation_response}")
-                    print("\nQ&A session complete based on validation!")
-                    
-                    # Generate final assessment from Q&A agent
-                    print("\nGenerating final assessment...")
-                    print("Career Advisor: ", end="", flush=True)
-                    qna_summary = ""
-                    
-                    # Create summary prompt using only conversation thread
-                    conversation_text = "\n".join(conversation_history)
-                    summary_prompt = f"""Based ONLY on our conversation thread below, provide your final assessment in JSON format.
-
-CONVERSATION THREAD:
-{conversation_text}
-
-IMPORTANT: Only include information that was actually discussed in this conversation. Do not include any information from the user's CV or external knowledge. Focus only on what the user said during our Q&A exchange.
-
-Provide assessment with: discovered_strengths, hidden_connections, addressable_gaps, real_barriers, confidence_boosters, growth_areas, role_understanding, genuine_interest, and conversation_notes."""
-                    
-                    async for chunk in qna_agent.run_stream(summary_prompt, thread=thread):
-                        if chunk.text:
-                            print(chunk.text, end="", flush=True)
-                            qna_summary += chunk.text
-                    print()
-                    conversation_complete = True
-                else:
-                    # Don't show validation details, just continue
-                    pass
-                    
-            except Exception as e:
-                logger.warning(f"Validation check failed: {e}")
-                # Continue conversation even if validation fails
+                conversation_history.append(f"Advisor: {ending_response}")
+                agent_asked_termination_question = detect_termination_question(ending_response)
             
-            # Check if Q&A agent provided final assessment
+            # Check for natural completion
             if ('discovered_strengths' in user_response and 'conversation_notes' in user_response) or \
                ('final assessment' in user_response.lower()):
                 print("\nQ&A session complete!")
-                qna_summary = user_response
                 conversation_complete = True
+                qna_summary = user_response
     
-    # Clean up gaps file
+    # Cleanup
     try:
         os.remove(gaps_file_path)
     except:
