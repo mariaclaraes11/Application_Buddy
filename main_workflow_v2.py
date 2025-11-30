@@ -592,6 +592,26 @@ async def analyze_all_jobs(cv_content, jobs):
     
     print(f"\n Analysis of all {len(jobs)} jobs completed!")
 
+def create_cv_analysis_workflow():
+    """Create the CV Analysis workflow for DevUI visualization."""
+    logger.info("🏗️ Building CV Analysis workflow for DevUI...")
+    
+    workflow = (
+        WorkflowBuilder()
+        .set_start_executor(analyze_cv_job)
+        .add_edge(analyze_cv_job, handle_qna_session, condition=needs_qna_condition)
+        .add_edge(handle_qna_session, generate_recommendation_with_qna)
+        .add_edge(analyze_cv_job, generate_recommendation_direct, condition=skip_qna_condition)
+        .build()
+    )
+    
+    # Set workflow metadata for DevUI
+    workflow.id = "cv_analysis_workflow"
+    workflow.description = "CV Analysis Workflow - Analyzes candidate CV against job requirements with optional Q&A session"
+    
+    logger.info("✅ CV Analysis workflow built for DevUI")
+    return workflow
+
 async def main():
     """
     Main execution with full MVP user experience + V2 validation agent.
