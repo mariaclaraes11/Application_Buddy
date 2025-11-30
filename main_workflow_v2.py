@@ -248,8 +248,20 @@ async def conduct_interactive_qna_with_validation(analysis_result: AnalysisResul
         logger.warning(f"Failed to parse analysis JSON: {e}")
         analysis_data = {"gaps": []}
     
-    # Initialize gaps file
+    # Initialize gaps file with mandatory gaps
     gaps_list = [gap.get('name', str(gap)) for gap in analysis_data.get('gaps', [])]
+    
+    # Add mandatory gaps that must always be addressed
+    mandatory_gaps = [
+        "Work authorization/location eligibility",
+        "Role understanding and alignment with career goals"
+    ]
+    
+    # Add mandatory gaps if they don't already exist
+    for mandatory_gap in mandatory_gaps:
+        if not any(mandatory_gap.lower() in existing_gap.lower() for existing_gap in gaps_list):
+            gaps_list.append(mandatory_gap)
+    
     await update_gaps_file(gaps_file_path, gaps_list)
     
     # Setup agents and conversation
@@ -269,7 +281,8 @@ async def conduct_interactive_qna_with_validation(analysis_result: AnalysisResul
     conversation_complete = False
     conversation_history = [qna_response]
     agent_asked_termination_question = False
-    termination_phrases = ['nothing else', 'that\'s all', 'that\'s it', 'nothing more', 'no thanks', 'all good', 'im ready', 'i\'m ready', 'ready', 'nope all good', 'nope', 'no']
+    in_wrap_up_mode = False  # Track if we're in wrap-up mode where every response should end with 'n' prompt
+    qna_summary = ""  # Initialize to avoid undefined variable error
     
     while not conversation_complete:
         print(f"\nYour response (or type 'done' to finish):")
@@ -279,11 +292,16 @@ async def conduct_interactive_qna_with_validation(analysis_result: AnalysisResul
             print("\nQ&A session complete!")
             return "User chose to end conversation. Based on conversation: " + "\n".join(conversation_history)
         
-        # Get agent response
-        user_response = await get_agent_response(qna_agent, f"User response: {user_input}", thread)
+        # Add user input to conversation history
+        conversation_history.append(f"User: {user_input}")
         
-        # Check for termination attempt
-        if user_input.lower() in termination_phrases and agent_asked_termination_question:
+        user_exchanges = len([msg for msg in conversation_history if msg.startswith("User:")])
+        current_gaps = await read_current_gaps(gaps_file_path)
+        
+        should_do_gap_targeting = (user_exchanges > 0 and user_exchanges % 5 == 0 and current_gaps)
+        
+        # Check for termination attempt BEFORE getting agent response
+        if user_input.lower().strip() == 'n' and (agent_asked_termination_question or in_wrap_up_mode):
             try:
                 is_complete, summary = await handle_termination_attempt(
                     qna_agent, validation_agent, user_input, conversation_history, gaps_file_path, thread
@@ -293,65 +311,101 @@ async def conduct_interactive_qna_with_validation(analysis_result: AnalysisResul
                     qna_summary = summary
                     continue
                 else:
-                    # Termination was rejected, reset flag
+                    # Termination was rejected, reset flags and exit wrap-up mode
                     agent_asked_termination_question = False
+                    in_wrap_up_mode = False
             except Exception as e:
                 logger.warning(f"Final validation check failed: {e} - allowing conversation to end")
                 summary = await get_agent_response(qna_agent, "Please provide your final assessment based on our conversation.", thread)
                 conversation_complete = True
                 qna_summary = summary
                 continue
+        elif should_do_gap_targeting:
+            # Do gap targeting instead of normal response
+            priority_gaps = [gap for gap in current_gaps if any(keyword in gap.lower() for keyword in ['networking', 'communication', 'teamwork', 'authorization', 'location'])]
+            target_gap = priority_gaps[0] if priority_gaps else current_gaps[0]
+            
+            print(f"\n Note: Guiding conversation to explore: {target_gap}")
+            
+            gap_targeting_prompt = f"""The user just responded: "{user_input}"
+
+Now I'd like you to acknowledge their response briefly, then naturally steer the conversation to explore their experience with: {target_gap}
+
+Don't directly mention 'gaps' or make it obvious - just ask about related experiences, examples, or specific situations. Avoid asking 'what excites you' questions. Be conversational and focus on concrete examples."""
+            
+            gap_response = await get_agent_response(qna_agent, gap_targeting_prompt, thread)
+            conversation_history.append(f"Advisor: {gap_response}")
+            
+            # Run validation check and update gaps after gap targeting
+            validation_ready, updated_gaps = await check_validation_status(
+                validation_agent, current_gaps, conversation_history
+            )
+            await update_gaps_file(gaps_file_path, updated_gaps)
+            
+            # Gap targeting responses might ask termination questions
+            agent_asked_termination_question = detect_termination_question(gap_response)
+            if agent_asked_termination_question:
+                in_wrap_up_mode = True
+        elif in_wrap_up_mode:
+            # We're in wrap-up mode - user asked about something else, answer and prompt for 'n' again
+            wrap_up_response = await get_agent_response(qna_agent, f"""User asked: "{user_input}"
+
+Please answer their question thoroughly, then end your response by asking if there's anything else they'd like to explore, making it clear they can answer 'n' if they feel everything has been covered.""", thread)
+            conversation_history.append(f"Advisor: {wrap_up_response}")
+            
+            # Run validation check and update gaps after wrap-up response
+            validation_ready, updated_gaps = await check_validation_status(
+                validation_agent, current_gaps, conversation_history
+            )
+            await update_gaps_file(gaps_file_path, updated_gaps)
+            
+            # We know we're asking for termination, so set the flag
+            agent_asked_termination_question = True
+            # Stay in wrap-up mode
         else:
-            # Normal conversation flow
-            conversation_history.append(f"User: {user_input}")
+            # Normal conversation flow - get agent response
+            user_response = await get_agent_response(qna_agent, f"User response: {user_input}", thread)
             conversation_history.append(f"Advisor: {user_response}")
             
             # Check if agent asked termination question
             agent_asked_termination_question = detect_termination_question(user_response)
             
-            # Run validation check and update gaps
-            current_gaps = await read_current_gaps(gaps_file_path)
+            # Run validation check and update gaps (reuse current_gaps from above)
             validation_ready, remaining_gaps = await check_validation_status(
                 validation_agent, current_gaps, conversation_history
             )
             
             await update_gaps_file(gaps_file_path, remaining_gaps)
             
-            # Suggest graceful ending if all gaps covered
-            if validation_ready and len(remaining_gaps) == 0:
-                print(f"\n💭 Note: All topics covered, conversation could wrap up naturally if Q&A agent feels complete")
-                
+            # Only suggest graceful ending if conversation is substantial AND validation indicates readiness
+            conversation_depth = len(conversation_history)
+            if validation_ready and conversation_depth >= 10:
                 ending_response = await get_agent_response(
                     qna_agent, 
-                    "The conversation has covered all the important topics. Consider asking if there's anything else the user would like to discuss before providing your final assessment.", 
+                    "The conversation has covered the key areas well. Ask if there's anything specific they'd like to explore further, and make it clear they can answer 'n' if they feel everything has been covered.", 
                     thread
                 )
                 
                 conversation_history.append(f"Advisor: {ending_response}")
-                agent_asked_termination_question = detect_termination_question(ending_response)
-            
-            # Check for natural completion
-            if ('discovered_strengths' in user_response and 'conversation_notes' in user_response) or \
-               ('final assessment' in user_response.lower()):
-                print("\nQ&A session complete!")
-                conversation_complete = True
-                qna_summary = user_response
+                # Enter wrap-up mode since we just asked a termination question
+                agent_asked_termination_question = True
+                in_wrap_up_mode = True
     
-    # Cleanup
+    # Cleanup - ensure gaps file is removed
     try:
-        os.remove(gaps_file_path)
-    except:
-        pass
+        if os.path.exists(gaps_file_path):
+            os.remove(gaps_file_path)
+            print(f"\n Cleaned up {gaps_file_path}")
+    except Exception as e:
+        logger.warning(f"Could not remove gaps file: {e}")
     
     logger.info("Interactive Q&A with validation monitoring completed")
-    return qna_summary
+    return qna_summary if qna_summary else "Conversation completed without formal termination."
 
 # WorkflowBuilder Executors (Simple @executor functions using MVP orchestrator)
 @executor(id="analyzer_executor") 
 async def analyze_cv_job(input_data: CVInput, ctx: WorkflowContext[AnalysisResult]) -> None:
-    """
-    Executor 1: CV/Job Analysis using direct agent calls
-    """
+
     logger.info(" Running CV analysis using direct agent calls...")
     
     # Use direct agent (same as MVP setup)
@@ -396,10 +450,7 @@ async def analyze_cv_job(input_data: CVInput, ctx: WorkflowContext[AnalysisResul
 
 @executor(id="qna_executor")
 async def handle_qna_session(analysis: AnalysisResult, ctx: WorkflowContext[QnAResult]) -> None:
-    """
-    Executor 2: Interactive Q&A Session with Validation Monitoring (V2 Enhancement)
-    User has interactive conversation while validation agent monitors gaps file
-    """
+
     logger.info(" Starting interactive Q&A session with validation monitoring...")
     
     # V2 Enhancement: Use interactive Q&A with validation monitoring
@@ -413,10 +464,7 @@ async def handle_qna_session(analysis: AnalysisResult, ctx: WorkflowContext[QnAR
 
 @executor(id="recommendation_executor_with_qna") 
 async def generate_recommendation_with_qna(qna_result: QnAResult, ctx: WorkflowContext[None, str]) -> None:
-    """
-    Executor 3a: Final Recommendation (after Q&A)
-    Uses direct agent calls.
-    """
+
     logger.info(" Generating recommendation with Q&A using direct agent calls...")
     
     # Debug: Show what Q&A insights we received
@@ -454,10 +502,7 @@ Based on the initial analysis and the Q&A conversation insights, provide a compr
 
 @executor(id="recommendation_executor_direct")
 async def generate_recommendation_direct(analysis: AnalysisResult, ctx: WorkflowContext[None, str]) -> None:
-    """
-    Executor 3b: Final Recommendation (skipping Q&A)  
-    Uses direct agent calls.
-    """
+
     logger.info(" Generating recommendation without Q&A using direct agent calls...")
     
     # Use direct agent (same as MVP setup)
