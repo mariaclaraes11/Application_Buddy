@@ -1,0 +1,20 @@
+# Azure Developer CLI configuration for hosting agents on Foundry
+name: cv-analysis-teams-orchestrator
+metadata:
+  template: python-agent-framework@latest
+location: eastus2
+
+services:
+  teams-orchestrator:
+    project: ./
+    language: python
+    host: containerapp
+    
+# Environment variables for Foundry deployment
+env:
+  AZURE_AI_FOUNDRY_ENDPOINT:
+    secret: true
+  MODEL_DEPLOYMENT_NAME:
+    value: "gpt-4o"
+  API_VERSION:
+    value: "2024-10-01-preview"

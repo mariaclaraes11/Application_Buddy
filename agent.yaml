@@ -1,0 +1,59 @@
+# Agent manifest for Foundry hosting
+$schema: https://azuremlschemas.azureedge.net/latest/agent.schema.json
+
+name: cv-teams-orchestrator-workflowbuilder
+version: "1.0"
+description: "CV Analysis Teams Orchestrator using WorkflowBuilder (EXACTLY like main_workflow_v2) + Foundry Memory"
+
+# Agent configuration
+agent:
+  type: "code-agent"
+  runtime: "python"
+  entry_point: "teams_orchestrator.py"
+  
+# Functions exposed to Teams (WorkflowBuilder-based)
+functions:
+  - name: teams_analyze_cv
+    description: "Analyze candidate CV using WorkflowBuilder workflow with conditional Q&A routing and Foundry Memory"
+    parameters:
+      cv_text:
+        type: string
+        description: "Candidate's CV text"
+        required: true
+      job_description:
+        type: string  
+        description: "Job posting description"
+        required: true
+      user_id:
+        type: string
+        description: "Teams user ID for memory and personalization"
+        required: true
+      agent_run_context:
+        type: object
+        description: "Foundry AgentRunContext for memory access"
+        required: false
+        
+  - name: teams_get_analysis_status
+    description: "Get status of ongoing WorkflowBuilder CV analysis"
+    parameters:
+      conversation_id:
+        type: string
+        description: "Analysis conversation ID"
+        required: true
+
+# Dependencies for hosted deployment
+dependencies:
+  - agent-framework
+  - azure-ai-projects
+  - azure-identity
+  - python-dotenv
+
+# Resource requirements
+resources:
+  cpu: "1.0"
+  memory: "2Gi"
+  
+# Scaling configuration
+scaling:
+  min_instances: 1
+  max_instances: 10
