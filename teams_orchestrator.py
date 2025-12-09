@@ -31,6 +31,8 @@ from agent_framework import ChatAgent
 from agent_framework.azure import AzureOpenAIChatClient
 
 # Import your existing configurations
+from dotenv import load_dotenv
+
 from src.config import Config
 from src.agents.agent_definitions import AgentDefinitions
 
@@ -707,6 +709,8 @@ async def teams_analyze_cv(cv_text: str, job_description: str, user_id: str, age
     global _agent_run_context
     _agent_run_context = agent_run_context  # Store for use in executors
     
+    # Load environment variables for Foundry deployment
+    load_dotenv()
     config = Config()
     await setup_agents(config)
     
