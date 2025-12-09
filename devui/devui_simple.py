@@ -5,7 +5,7 @@ Uses your existing workflow with zero code duplication.
 import os
 from dotenv import load_dotenv
 from agent_framework.devui import serve
-from main_workflow_v2 import create_cv_analysis_workflow
+from workflows.main_workflow_v2 import create_cv_analysis_workflow
 
 def main():
     """Launch DevUI - dead simple version!"""

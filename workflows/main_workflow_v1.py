@@ -29,7 +29,7 @@ from agent_framework.azure import AzureOpenAIChatClient
 from azure.identity import DefaultAzureCredential
 
 # Import MVP functions directly (no code duplication!)
-from main_mvp import read_cv_file, parse_job_descriptions, extract_job_title
+from workflows.main_mvp import read_cv_file, parse_job_descriptions, extract_job_title
 from src.config import Config
 from src.agents.agent_definitions import AgentDefinitions
 

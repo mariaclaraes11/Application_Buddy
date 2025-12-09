@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from agent_framework.devui import serve
 
 # Import EVERYTHING from your existing workflow - no duplication!
-from main_workflow_v2 import create_cv_analysis_workflow, setup_agents, CVInput, read_cv_file, parse_job_descriptions
+from workflows.main_workflow_v2 import create_cv_analysis_workflow, setup_agents, CVInput, read_cv_file, parse_job_descriptions
 from src.config import Config
 
 async def main():
@@ -31,7 +31,7 @@ async def main():
         await setup_agents(config)
         workflow = create_cv_analysis_workflow()
         
-        print("✅ Using your existing workflow from main_workflow_v2.py")
+        print("✅ Using your existing workflow from workflows/main_workflow_v2.py")
         print(f"🌐 Starting DevUI at http://localhost:8080")
         
         # THE ONLY LINE THAT CREATES DEVUI - using your existing workflow!
