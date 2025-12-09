@@ -66,6 +66,8 @@ async def setup_agents(config: Config) -> Dict[str, ChatAgent]:
         return _agents
         
     logger.info("Setting up local agents for WorkflowBuilder executors...")
+        
+    logger.info("Setting up local agents for WorkflowBuilder executors...")
     
     agents_config = AgentDefinitions.get_all_agents()
     
@@ -215,6 +217,13 @@ async def handle_termination_attempt(qna_agent: ChatAgent, validation_agent: Cha
         validation_agent, current_gaps, conversation_history, is_termination_attempt=True
     )
     
+    # User explicitly said "n" to termination question - respect their choice and end conversation
+    if user_input.lower().strip() == 'n':
+        print("\nGenerating final assessment...")
+        summary = await get_agent_response(qna_agent, "Please provide your final assessment based on our conversation.", thread)
+        return True, summary
+    
+    # For other termination attempts, check validation status
     if validation_ready and len(updated_gaps) == 0:
         # Proceed with final assessment
         print("\nGenerating final assessment...")
@@ -377,9 +386,12 @@ Please answer their question thoroughly, then end your response by asking if the
             
             await update_gaps_file(gaps_file_path, remaining_gaps)
             
-            # Only suggest graceful ending if conversation is substantial AND validation indicates readiness
-            conversation_depth = len(conversation_history)
-            if validation_ready and conversation_depth >= 10:
+            # Handle termination logic - only ONE path should execute
+            if agent_asked_termination_question:
+                # Agent naturally asked termination question - enter wrap-up mode
+                in_wrap_up_mode = True
+            elif validation_ready and len(conversation_history) >= 10 and not in_wrap_up_mode:
+                # FALLBACK: Agent didn't naturally conclude but validation says we're ready
                 ending_response = await get_agent_response(
                     qna_agent, 
                     "The conversation has covered the key areas well. Ask if there's anything specific they'd like to explore further, and make it clear they can answer 'n' if they feel everything has been covered.", 
@@ -405,8 +417,7 @@ Please answer their question thoroughly, then end your response by asking if the
 # WorkflowBuilder Executors (Simple @executor functions using MVP orchestrator)
 @executor(id="analyzer_executor") 
 async def analyze_cv_job(input_data: CVInput, ctx: WorkflowContext[AnalysisResult]) -> None:
-
-    logger.info(" Running CV analysis using direct agent calls...")
+    logger.info("🔧 Running CV analysis using direct agent calls...")
     
     # Use direct agent (same as MVP setup)
     analyzer = _agents["analyzer"]
@@ -450,8 +461,7 @@ async def analyze_cv_job(input_data: CVInput, ctx: WorkflowContext[AnalysisResul
 
 @executor(id="qna_executor")
 async def handle_qna_session(analysis: AnalysisResult, ctx: WorkflowContext[QnAResult]) -> None:
-
-    logger.info(" Starting interactive Q&A session with validation monitoring...")
+    logger.info("🔧 Starting interactive Q&A session with validation monitoring...")
     
     # V2 Enhancement: Use interactive Q&A with validation monitoring
     qna_insights = await conduct_interactive_qna_with_validation(analysis)
@@ -609,19 +619,15 @@ def create_cv_analysis_workflow():
     workflow.id = "cv_analysis_workflow"
     workflow.description = "CV Analysis Workflow - Analyzes candidate CV against job requirements with optional Q&A session"
     
-    logger.info("✅ CV Analysis workflow built for DevUI")
+    logger.info(" CV Analysis workflow built for DevUI")
     return workflow
 
 async def main():
-    """
-    Main execution with full MVP user experience + V2 validation agent.
-    """
-    # Load environment variables
     load_dotenv()
     
     # Check if configuration is set up (same as MVP)
     if not os.getenv("AZURE_AI_FOUNDRY_ENDPOINT"):
-        print("  Configuration Setup Required")
+        print("⚠️  Configuration Setup Required")
         print("=" * 50)
         print("Please set up your configuration:")
         print("1. Copy .env.example to .env")
@@ -629,14 +635,14 @@ async def main():
         print("3. Ensure you're authenticated with Azure (az login)")
         return
     
-    print(" CV/Job Analysis Workflow - Version 2 (With Validation Agent)")
+    print("🔧 CV/Job Analysis Workflow - Version 2 (With Validation Agent)")
     print("=" * 65)
     
     try:
         # Setup agents first
         config = Config()
         await setup_agents(config)
-        logger.info(" Agents setup complete")
+        logger.info("✅ Agents setup complete")
         
         # Read CV content (same as MVP)
         print(" Reading your CV...")
