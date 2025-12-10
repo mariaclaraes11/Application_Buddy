@@ -1,10 +1,10 @@
 # Azure AI Agent Server for hosted agents
-azure-ai-agentserver-agentframework==1.0.0b3
+azure-ai-agentserver-agentframework
 agent-framework
 
-# Azure AI integration
-azure-ai-projects==1.0.0b6
-azure-ai-inference==1.0.0b5
+# Azure AI integration (versions must be compatible with agentserver)
+azure-ai-projects>=1.0.0b11
+azure-ai-inference
 azure-identity
 
 # Additional utilities
