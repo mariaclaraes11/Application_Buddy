@@ -16,16 +16,21 @@ import asyncio
 import json
 import logging
 import os
+import sys
 from dataclasses import dataclass
 from typing import Any, Dict
 from dotenv import load_dotenv
+
+# Add parent directory to Python path so we can import from src
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 # WorkflowBuilder imports  
 from agent_framework import WorkflowBuilder, WorkflowContext, executor
 from agent_framework import ChatAgent
 from agent_framework.azure import AzureOpenAIChatClient
 from azure.identity import DefaultAzureCredential, AzureCliCredential
 # Import MVP functions directly (no code duplication!)
-from workflows.main_mvp import read_cv_file, parse_job_descriptions, extract_job_title
+from main_mvp import read_cv_file, parse_job_descriptions, extract_job_title
 from src.config import Config
 from src.agents.agent_definitions import AgentDefinitions
 # Configure logging
@@ -602,7 +607,7 @@ async def analyze_all_jobs(cv_content, jobs):
     
     print(f"\n Analysis of all {len(jobs)} jobs completed!")
 
-def create_cv_analysis_workflow():
+def devui_workflow():
     """Create the CV Analysis workflow for DevUI visualization."""
     logger.info("🏗️ Building CV Analysis workflow for DevUI...")
     
@@ -627,7 +632,7 @@ async def main():
     
     # Check if configuration is set up (same as MVP)
     if not os.getenv("AZURE_AI_FOUNDRY_ENDPOINT"):
-        print("⚠️  Configuration Setup Required")
+        print("  Configuration Setup Required")
         print("=" * 50)
         print("Please set up your configuration:")
         print("1. Copy .env.example to .env")
@@ -635,7 +640,7 @@ async def main():
         print("3. Ensure you're authenticated with Azure (az login)")
         return
     
-    print("🔧 CV/Job Analysis Workflow - Version 2 (With Validation Agent)")
+    print(" CV/Job Analysis Workflow - Version 2 (With Validation Agent)")
     print("=" * 65)
     
     try:

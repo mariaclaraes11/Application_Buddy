@@ -495,7 +495,7 @@ async def analyze_cv_job(input_data: CVInput, ctx: WorkflowContext[AnalysisResul
     """
     Executor 1: CV/Job Analysis (SAME as main_workflow_v2 + memory context)
     """
-    logger.info("🔧 Running CV analysis using direct agent calls...")
+    logger.info(" Running CV analysis using direct agent calls...")
     
     # Get user profile context if available (NEW for Teams/Foundry)
     user_profile = {}
@@ -889,3 +889,119 @@ Nice to have:
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+# ============================================================================
+# HOSTED AGENT WRAPPER - For Foundry deployment
+# ============================================================================
+
+class TeamsOrchestratorAgent:
+    """Hosted agent wrapper for teams orchestrator deployment"""
+    
+    def __init__(self):
+        self.config = None
+        self.workflow = None
+        self._initialized = False
+    
+    async def initialize(self):
+        """Initialize the agent for hosted deployment"""
+        if self._initialized:
+            return
+            
+        try:
+            # Load configuration
+            self.config = Config.from_env()
+            await setup_agents(self.config)
+            
+            # Create workflow instance
+            self.workflow = WorkflowBuilder("cv_analysis_teams_workflow")
+            self.workflow.add_route("analyze_cv", analyze_cv)
+            self.workflow.add_route("conduct_qna", conduct_qna)
+            
+            self._initialized = True
+            logger.info("✅ Teams orchestrator agent initialized for hosting")
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize teams orchestrator agent: {e}")
+            raise
+    
+    async def teams_analyze_cv(self, cv_text: str, job_description: str, user_id: str) -> dict:
+        """Main function exposed to Teams for CV analysis"""
+        if not self._initialized:
+            await self.initialize()
+        
+        try:
+            # Create input data
+            input_data = CVInput(
+                cv_text=cv_text,
+                job_description=job_description,
+                user_id=user_id
+            )
+            
+            # Execute workflow
+            async for event in self.workflow.run_stream(input_data):
+                if hasattr(event, 'data') and event.data:
+                    # Parse the result and return structured response
+                    result_data = event.data
+                    
+                    # Extract analysis information
+                    analysis_info = self._parse_analysis_result(result_data)
+                    
+                    return {
+                        "success": True,
+                        "analysis_result": result_data,
+                        "score": analysis_info.get("score", 0),
+                        "needs_qna": analysis_info.get("needs_qna", False),
+                        "recommendation": analysis_info.get("recommendation", "Analysis completed"),
+                        "timestamp": datetime.now().isoformat(),
+                        "user_id": user_id
+                    }
+            
+            # Fallback if no result
+            return {
+                "success": False,
+                "error": "No analysis result produced",
+                "timestamp": datetime.now().isoformat(),
+                "user_id": user_id
+            }
+            
+        except Exception as e:
+            logger.error(f"CV analysis failed: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "timestamp": datetime.now().isoformat(),
+                "user_id": user_id
+            }
+    
+    def _parse_analysis_result(self, result_data: str) -> dict:
+        """Parse analysis result to extract key information"""
+        try:
+            # Try to extract JSON from the result
+            if '{' in result_data and '}' in result_data:
+                json_start = result_data.find('{')
+                json_end = result_data.rfind('}') + 1
+                json_str = result_data[json_start:json_end]
+                
+                analysis_data = json.loads(json_str)
+                
+                return {
+                    "score": analysis_data.get("preliminary_score", 0),
+                    "needs_qna": len(analysis_data.get("gaps", [])) > 0,
+                    "recommendation": analysis_data.get("recommendation", "Analysis completed")
+                }
+        except:
+            pass
+        
+        return {
+            "score": 0,
+            "needs_qna": True,
+            "recommendation": "Analysis completed"
+        }
+
+# Create global agent instance for hosting
+_hosted_agent = TeamsOrchestratorAgent()
+
+# Expose functions for Foundry hosting
+async def teams_analyze_cv(cv_text: str, job_description: str, user_id: str) -> dict:
+    """Entry point for Foundry hosted deployment"""
+    return await _hosted_agent.teams_analyze_cv(cv_text, job_description, user_id)

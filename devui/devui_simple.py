@@ -5,7 +5,7 @@ Uses your existing workflow with zero code duplication.
 import os
 from dotenv import load_dotenv
 from agent_framework.devui import serve
-from workflows.main_workflow_v2 import create_cv_analysis_workflow
+from workflows.main_workflow_v2 import devui_workflow
 
 def main():
     """Launch DevUI - dead simple version!"""
@@ -17,7 +17,7 @@ def main():
         return
     
     print("✅ Loading your workflow...")
-    workflow = create_cv_analysis_workflow()
+    workflow = devui_workflow()
     
     print("🌐 Starting DevUI at http://localhost:8080")
     serve(entities=[workflow], port=8080, auto_open=True)

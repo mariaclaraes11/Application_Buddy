@@ -1,15 +1,7 @@
-name: teams-orchestrator
+name: TeamsOrchestrator
 description: CV Analysis Teams Orchestrator using WorkflowBuilder workflow with conditional Q&A routing. Analyzes candidate CVs against job descriptions with interactive validation and gap targeting.
-metadata:
-  tags:
-    - AI Agent Hosting
-    - Azure AI AgentServer
-    - Teams Integration
-    - CV Analysis
-    - Microsoft Agent Framework
-    - WorkflowBuilder
 template:
-  name: teams-orchestrator
+  name: TeamsOrchestrator
   kind: hosted
   protocols:
     - protocol: responses
@@ -19,7 +11,6 @@ template:
       value: ${AZURE_AI_PROJECT_ENDPOINT}
     - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
       value: "{{chat}}"
-
 resources:
   - kind: model
     id: gpt-4o

@@ -1,20 +1,33 @@
-# Azure Developer CLI configuration for hosting agents on Foundry
-name: cv-analysis-teams-orchestrator
-metadata:
-  template: python-agent-framework@latest
-location: eastus2
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
 
+requiredVersions:
+    extensions:
+        azure.ai.agents: '>=0.1.0-preview'
+name: ai-foundry-starter-basic
 services:
-  teams-orchestrator:
-    project: ./
-    language: python
-    host: containerapp
-    
-# Environment variables for Foundry deployment
-env:
-  AZURE_AI_FOUNDRY_ENDPOINT:
-    secret: true
-  MODEL_DEPLOYMENT_NAME:
-    value: "gpt-4o"
-  API_VERSION:
-    value: "2024-10-01-preview"
+    TeamsOrchestrator:
+        project: src/TeamsOrchestrator
+        host: azure.ai.agent
+        language: docker
+        docker:
+            remoteBuild: true
+        config:
+            container:
+                resources:
+                    cpu: "1"
+                    memory: 2Gi
+                scale:
+                    maxReplicas: 3
+                    minReplicas: 1
+            deployments:
+                - model:
+                    format: OpenAI
+                    name: gpt-4o
+                    version: "2024-11-20"
+                  name: gpt-4o
+                  sku:
+                    capacity: 10
+                    name: GlobalStandard
+infra:
+    provider: bicep
+    path: ./infra

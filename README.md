@@ -1,309 +1,181 @@
-# Application Buddy
+# Microsoft Foundry `azd` bicep starter kit (basic)
 
-A sophisticated CV/Job matching system powered by Microsoft Agent Framework and Azure AI Foundry. This system helps **job applicants** decide whether they should apply for a position by providing intelligent analysis and personalized recommendations.
+This Azure Developer CLI (azd) template provides a streamlined way to provision and deploy Microsoft Foundry resources for building and running AI agents. It includes infrastructure-as-code definitions and sample application code to help you quickly get started with Microsoft Foundry's agent capabilities, including model deployments, workspace configuration, and supporting services like storage and container hosting.
 
-## Purpose
+This template does **not** include agent code or application code. You will find samples in other repositories such as [foundry-samples](https://github.com/azure-ai-foundry/foundry-samples/tree/main/samples/microsoft/hosted-agents)
 
-**For Job Applicants Only** - This tool helps candidates:
-- Analyze their CV against job requirements  
-- Understand their strengths and gaps
-- Get personalized application advice
-- Make informed decisions about whether to apply
-- Avoid mass-applying to unsuitable positions
+[Features](#features) • [Getting Started](#getting-started) • [Guidance](#guidance)
 
-## 🚀 Quick Start
+This template, the application code and configuration it contains, has been built to showcase Microsoft Azure specific services and tools. We strongly advise our customers not to make this code part of their production environments without implementing or enabling additional security features.
 
-### 1. Setup Your Files
-```bash
-# Fill in your CV
-text_examples/my_cv.txt
+With any AI solutions you create using these templates, you are responsible for assessing all associated risks, and for complying with all applicable laws and safety standards. Learn more in the transparency documents for [Agent Service](https://learn.microsoft.com/en-us/azure/ai-foundry/responsible-ai/agents/transparency-note) and [Agent Framework](https://github.com/microsoft/agent-framework/blob/main/TRANSPARENCY_FAQ.md).
 
-# Fill in job descriptions  
-text_examples/job_descriptions.txt
+## Features
+
+This project framework provides the following features:
+
+* **Microsoft Foundry Project**: Complete setup of Microsoft Foundry workspace with project configuration
+* **Foundry Model Deployments**: Automatic deployment of AI models for agent capabilities
+* **Azure Container Registry**: Container image storage and management for agent deployments
+* **Managed Identity**: Built-in Azure Managed Identity for keyless authentication between services
+
+### Architecture Diagram
+
+This starter kit will provision the bare minimum for your hosted agent to work (if `ENABLE_HOSTED_AGENTS=true`).
+
+| Resource | Description |
+|----------|-------------|
+| [Microsoft Foundry](https://learn.microsoft.com/azure/ai-foundry) | Provides a collaborative workspace for AI development with access to models, data, and compute resources |
+| [Azure Container Registry](https://learn.microsoft.com/azure/container-registry/) | Stores and manages container images for secure deployment |
+| [Application Insights](https://learn.microsoft.com/azure/azure-monitor/app/app-insights-overview) | *Optional* - Provides application performance monitoring, logging, and telemetry for debugging and optimization |
+| [Log Analytics Workspace](https://learn.microsoft.com/azure/azure-monitor/logs/log-analytics-workspace-overview) | *Optional* - Collects and analyzes telemetry data for monitoring and troubleshooting |
+
+Those resources will be used by the [`azd ai agent` extension](https://aka.ms/azdaiagent/docs) when building and deploying agents:
+
+```mermaid
+graph TB
+    Dev[👤 Agent Developer]
+    Dev -->|1. build agent<br/>container code| ACR
+    Dev -->|2. deploy agent| AIFP
+    Dev -->|4. query agent| AIFP
+
+    subgraph "Azure Resource Group"
+        subgraph "Azure AI Foundry Account"
+            AIFP[Azure AI Foundry<br/>Project]
+            Models[Model Deployments]
+        end
+        
+        subgraph ACR[Azure Container Registry]
+            ACC[Agent code container]
+        end
+    end
+    
+    %% Connections
+    AIFP --> Models
+    ACR -->|3. AcrPull| AIFP
+    
+    %% Styling
+    classDef primary fill:#0078d4,stroke:#005a9e,stroke-width:2px,color:#fff
+    classDef secondary fill:#00bcf2,stroke:#0099bc,stroke-width:2px,color:#fff
+    
+    class AIFP,Models primary
+    class ACR secondary
 ```
 
-### 2. Choose Your Experience
-```bash
-# MVP Version - Proven, stable experience
-python main_mvp.py
+The template is parametrized so that it can be configured with additional resources depending on the agent requirements:
 
-# WorkflowBuilder V1 - Enhanced with streaming conversation
-python main_workflow_v1.py
-```
+* deploy AI models by setting `AI_PROJECT_DEPLOYMENTS` with a list of model deployment configs,
+* provision additional resources (Azure AI Search, Bing Search) by setting `AI_PROJECT_DEPENDENT_RESOURCES`,
+* enable monitoring by setting `ENABLE_MONITORING=true` (default on),
+* provision connections by setting `AI_PROJECT_CONNECTIONS` with a list of connection configs.
 
-That's it! The system automatically reads your files and provides complete analysis with optional interactive Q&A.
+## Getting Started
 
-## 📋 Available Implementations
-
-### 1. `main_mvp.py` - **MVP Version** ✅ (Stable & Proven)
-**What it does:** Original proven implementation with Group Chat orchestration
-- Automatic file-based CV and job loading
-- Multi-job description support  
-- Interactive Q&A when gaps are detected
-- Clean Group Chat orchestrator pattern
-- Battle-tested and reliable
-
-**Usage:**
-```bash
-python main_mvp.py
-```
-
-### 2. `main_workflow_v1.py` - **WorkflowBuilder Version** ⭐ (Enhanced Experience)
-**What it does:** Modern Agent Framework WorkflowBuilder with enhanced features
-- **Letter-by-letter streaming** for natural conversation experience
-- **Thread-based conversation memory** - no repeated questions
-- **Enhanced role understanding** - helps you understand what jobs actually involve
-- **Improved Q&A targeting** - focuses on exploring identified gaps
-- Pure WorkflowBuilder orchestration with conditional routing
-- Same reliable analysis as MVP with better user experience
-
-**Usage:**
-```bash
-python main_workflow_v1.py
-```
-
-**New Features in V1:**
-- ✨ **Streaming responses** - Career advisor types responses like a real person
-- 🧠 **Conversation memory** - Agent remembers what you've discussed
-- 🎯 **Gap-focused Q&A** - Naturally explores your missing skills through stories
-- 📚 **Role education** - Explains what jobs actually involve day-to-day
-- 🔗 **Better insights** - "New Things Found During Our Conversation" section
-
-### 3. `main_interactive.py` - **Manual Input with Q&A** 
-**What it does:** Original manual conversation approach
-- Manual CV and job description entry
-- Interactive Q&A conversation
-- Good for single job analysis
-
-**Usage:**
-```bash
-python main_interactive.py
-```
-
-### 4. `main.py` - **Basic Demo** 
-**What it does:** Original demonstration script
-- Basic agent interaction example
-- No file loading or Q&A features
-
-**Usage:**
-```bash
-python main.py
-```
-
-## 🏗️ Architecture
-
-### Agent Definitions (`src/agents/agent_definitions.py`)
-Three specialized agents work together:
-
-1. **CV Analysis Agent** - Extracts skills and experiences from your CV
-2. **Job Analysis Agent** - Analyzes job requirements and expectations  
-3. **Recommendation Agent** - Synthesizes insights and provides personalized advice
-
-### Orchestration Patterns
-
-**MVP (Group Chat):**
-- Uses Microsoft Agent Framework Group Chat pattern
-- Sequential agent execution with message passing
-- Proven and reliable orchestration
-
-**WorkflowBuilder V1:**
-- Pure Microsoft Agent Framework WorkflowBuilder
-- `@executor` functions with conditional routing
-- Enhanced user experience features:
-  - Thread-based conversation memory
-  - Streaming responses with `agent.run_stream()`
-  - Dynamic routing based on Q&A needs
-
-## 📁 File Structure
-
-```
-Application_Buddy/
-├── main_mvp.py                 # MVP Group Chat implementation
-├── main_workflow_v1.py         # WorkflowBuilder V1 with streaming
-├── main_interactive.py         # Original manual conversation
-├── main.py                     # Basic demo
-├── requirements.txt            # Dependencies
-└── src/
-    ├── agents/
-    │   ├── agent_definitions.py    # Enhanced agent prompts
-    │   └── optimized_orchestrator.py  # MVP orchestrator
-    └── config.py               # Configuration
-```
-
-## 💡 Usage Tips
-
-**Which version should you use?**
-- 🎯 **New users:** Start with `main_workflow_v1.py` for the best experience
-- 🛡️ **Stability-first:** Use `main_mvp.py` for proven reliability  
-- 📝 **Single job focus:** Try `main_interactive.py` for hands-on conversation
-- 🔬 **Development/Demo:** Use `main.py` for basic agent testing
-
-**Preparing your files:**
-- **CV file:** Include your complete work history, skills, education, projects
-- **Job descriptions:** Copy full job postings, not just bullet points
-- **Multiple jobs:** Separate job descriptions with clear headers in the file
-
-## 🔧 Technical Details
-
-**Dependencies:** Microsoft Agent Framework, Azure AI Foundry
-**Python Version:** 3.8+
-**AI Models:** Uses Azure-hosted models via Agent Framework
-**File Support:** Plain text files for CV and job descriptions
-
-## 🤝 Contributing
-
-This project uses Microsoft Agent Framework best practices:
-- Agent prompts in dedicated definition files
-- Clean separation of orchestration and agent logic  
-- Thread-based conversation memory for Q&A continuity
-- Streaming responses for enhanced user experience
-
-## 🎯 Example Workflow
-
-1. **Setup:** Fill `text_examples/my_cv.txt` and `text_examples/job_descriptions.txt`
-2. **Analysis:** Run `python main_workflow_v1.py`  
-3. **Review:** Get comprehensive match analysis
-4. **Q&A:** If gaps found, engage in streaming conversation about your experiences
-5. **Decision:** Receive personalized recommendation on whether to apply
-
-## Table of Contents
-
-- [Prerequisites](#prerequisites)
-- [Installation & Setup](#installation--setup)
-- [Environment Configuration](#environment-configuration)
-- [Usage](#usage)
-- [Architecture Details](#architecture-details)
-- [Troubleshooting](#troubleshooting)
-
-## Prerequisites
-
-Before you begin, ensure you have:
-
-- **Python 3.8+** installed
-- **Azure CLI** installed and configured (`az login`)
-- **Azure AI Foundry project** with a deployed model (GPT-4, GPT-4o, etc.)
-- **Git** for version control
-- **VS Code** (recommended, especially with Remote-WSL extension for WSL users)
-
-## Installation & Setup
-
-### Step 1: Clone the Repository
+Note: this repository is not meant to be cloned, but to be consumed as a template in your own project:
 
 ```bash
-git clone https://github.com/mariaclaraes11/Application_Buddy.git
-cd Application_Buddy
+azd init --template Azure-Samples/ai-foundry-starter-basic
 ```
 
-### Step 2: Create Virtual Environment
+### Prerequisites
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-```
+* Install [azd](https://aka.ms/install-azd)
+  * Windows: `winget install microsoft.azd`
+  * Linux: `curl -fsSL https://aka.ms/install-azd.sh | bash`
+  * MacOS: `brew tap azure/azd && brew install azd`
 
-### Step 3: Install Dependencies
+### Quickstart
 
-```bash
-pip install -r requirements.txt
-```
+1. Bring down the template code:
 
-### Step 4: Environment Configuration
+    ```shell
+    azd init --template Azure-Samples/ai-foundry-starter-basic
+    ```
 
-Create your environment configuration:
+    This will perform a git clone
 
-```bash
-cp .env.example .env
-```
+2. Sign into your Azure account:
 
-Edit `.env` with your Azure AI Foundry details:
+    ```shell
+    azd auth login
+    ```
 
-```env
-# Azure AI Foundry Configuration
-AZURE_AI_FOUNDRY_ENDPOINT=https://your-project.swedencentral.ai.azure.com
-MODEL_DEPLOYMENT_NAME=gpt-4o
+3. Download a sample agent from GitHub:
 
-# Optional: Specific subscription (if you have multiple)
-AZURE_SUBSCRIPTION_ID=your-subscription-id
-```
+    ```shell
+    azd ai agent init -m <repo-path-to-agent.yaml>
+    ```
 
-### Step 5: Azure Authentication
+You'll find agent samples in the [`foundry-samples` repo](https://github.com/azure-ai-foundry/foundry-samples/tree/main/samples/microsoft/python/getting-started-agents/hosted-agents).
 
-Ensure you're logged into Azure CLI:
+## Guidance
 
-```bash
-az login
-# If you have multiple subscriptions:
-az account set --subscription "your-subscription-name-or-id"
-```
+### Region Availability
 
-## Environment Configuration
+This template does not use specific models. The model deployments are a parameter of the template. Each model may not be available in all Azure regions. Check for [up-to-date region availability of Microsoft Foundry](https://learn.microsoft.com/en-us/azure/ai-foundry/reference/region-support) and in particular the [Agent Service](https://learn.microsoft.com/en-us/azure/ai-foundry/agents/concepts/model-region-support?tabs=global-standard).
 
-### Required Environment Variables
+## Resource Clean-up
 
-Create a `.env` file in the project root with these variables:
+To prevent incurring unnecessary charges, it's important to clean up your Azure resources after completing your work with the application.
 
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `AZURE_AI_FOUNDRY_ENDPOINT` | Your Azure AI Foundry project endpoint | `https://app-buddy-resource.swedencentral.ai.azure.com` |
-| `MODEL_DEPLOYMENT_NAME` | Name of your deployed model | `gpt-4o` |
-| `AZURE_SUBSCRIPTION_ID` | (Optional) Specific subscription ID | `12345678-1234-1234-1234-123456789012` |
+- **When to Clean Up:**
+  - After you have finished testing or demonstrating the application.
+  - If the application is no longer needed or you have transitioned to a different project or environment.
+  - When you have completed development and are ready to decommission the application.
 
+- **Deleting Resources:**
+  To delete all associated resources and shut down the application, execute the following command:
+  
+    ```bash
+    azd down
+    ```
 
-## Usage
+    Please note that this process may take up to 20 minutes to complete.
 
-### Quick Start
+⚠️ Alternatively, you can delete the resource group directly from the Azure Portal to clean up resources.
 
-1. **Activate your virtual environment:**
-   ```bash
-   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-   ```
+### Costs
 
-2. **Run the file-based application:**
-   ```bash
-   python main_file_based.py
-   ```
+Pricing varies per region and usage, so it isn't possible to predict exact costs for your usage.
+The majority of the Azure resources used in this infrastructure are on usage-based pricing tiers.
 
-3. **What happens on first run:**
-   - ✅ Agents are automatically created in your Azure AI Foundry project  
-   - ✅ CV and job descriptions are read from text files automatically
-   - ✅ All conversations appear in Foundry dashboard for monitoring
-   - ✅ No manual copy-pasting required!
+You can try the [Azure pricing calculator](https://azure.microsoft.com/pricing/calculator) for the resources deployed in this template.
 
-4. **Usage:**
-   - System automatically loads your CV from `text_examples/my_cv.txt`
-   - System automatically loads job descriptions from `text_examples/job_descriptions.txt`  
-   - System analyzes and provides recommendation
-   - Interactive Q&A starts if gaps are detected
-   - View results in both terminal and Azure AI Foundry dashboard
+* **Microsoft Foundry**: Standard tier. [Pricing](https://azure.microsoft.com/pricing/details/ai-foundry/)
+* **Azure AI Services**: S0 tier, defaults to gpt-4o-mini. Pricing is based on token count. [Pricing](https://azure.microsoft.com/pricing/details/cognitive-services/)
+* **Azure Container Registry**: Basic SKU. Price is per day and on storage. [Pricing](https://azure.microsoft.com/en-us/pricing/details/container-registry/)
+* **Azure Storage Account**: Standard tier, LRS. Pricing is based on storage and operations. [Pricing](https://azure.microsoft.com/pricing/details/storage/blobs/)
+* **Log analytics**: Pay-as-you-go tier. Costs based on data ingested. [Pricing](https://azure.microsoft.com/pricing/details/monitor/)
+* **Azure AI Search**: Basic tier, LRS. Price is per day and based on transactions. [Pricing](https://azure.microsoft.com/en-us/pricing/details/search/)
+* **Grounding with Bing Search**: G1 tier. Costs based on transactions. [Pricing](https://www.microsoft.com/en-us/bing/apis/grounding-pricing)
 
-### Choosing the Right Script
+⚠️ To avoid unnecessary costs, remember to take down your app if it's no longer in use, either by deleting the resource group in the Portal or running `azd down`.
 
-**Use `main_file_based.py` when:** ⭐ (Recommended for daily use)
-- You want automatic file reading (no copy-pasting)
-- You have multiple job descriptions to analyze
-- You want the most user-friendly experience  
-- You want both analysis and interactive Q&A
+### Security guidelines
 
-**Use `main_interactive.py` when:**
-- You prefer to manually input CV and job descriptions
-- You want to have real conversations with the Q&A agent
-- You want more control over the analysis process
-- You want a more personal, conversational experience
+This template also uses [Managed Identity](https://learn.microsoft.com/entra/identity/managed-identities-azure-resources/overview) for local development and deployment.
 
+To ensure continued best practices in your own repository, we recommend that anyone creating solutions based on our templates ensure that the [Github secret scanning](https://docs.github.com/code-security/secret-scanning/about-secret-scanning) setting is enabled.
 
-## Dependencies
+You may want to consider additional security measures, such as:
 
-This project uses the following key dependencies:
+- Enabling Microsoft Defender for Cloud to [secure your Azure resources](https://learn.microsoft.com/azure/defender-for-cloud/).
+- Protecting the Azure Container Apps instance with a [firewall](https://learn.microsoft.com/azure/container-apps/waf-app-gateway) and/or [Virtual Network](https://learn.microsoft.com/azure/container-apps/networking?tabs=workload-profiles-env%2Cazure-cli).
 
-```
-agent-framework-azure-ai --pre   # Microsoft Agent Framework (preview)
-azure-ai-projects                # Azure AI Foundry integration
-azure-identity                   # Azure authentication
-python-dotenv                    # Environment variable management
-pydantic-settings                # Configuration management
-```
+> **Important Security Notice** <br/>
+This template, the application code and configuration it contains, has been built to showcase Microsoft Azure specific services and tools. We strongly advise our customers not to make this code part of their production environments without implementing or enabling additional security features.  <br/><br/>
+For a more comprehensive list of best practices and security recommendations for Intelligent Applications, [visit our official documentation](https://learn.microsoft.com/en-us/azure/ai-foundry/).
 
-Install all dependencies with:
-```bash
-pip install -r requirements.txt
-```
+## Additional Disclaimers
+
+**Trademarks** This project may contain trademarks or logos for projects, products, or services. Authorized use of Microsoft trademarks or logos is subject to and must follow [Microsoft’s Trademark & Brand Guidelines](https://www.microsoft.com/en-us/legal/intellectualproperty/trademarks/usage/general). Use of Microsoft trademarks or logos in modified versions of this project must not cause confusion or imply Microsoft sponsorship. Any use of third-party trademarks or logos are subject to those third-party’s policies.
+
+To the extent that the Software includes components or code used in or derived from Microsoft products or services, including without limitation Microsoft Azure Services (collectively, “Microsoft Products and Services”), you must also comply with the Product Terms applicable to such Microsoft Products and Services. You acknowledge and agree that the license governing the Software does not grant you a license or other right to use Microsoft Products and Services. Nothing in the license or this ReadMe file will serve to supersede, amend, terminate or modify any terms in the Product Terms for any Microsoft Products and Services.
+
+You must also comply with all domestic and international export laws and regulations that apply to the Software, which include restrictions on destinations, end users, and end use. For further information on export restrictions, visit <https://aka.ms/exporting>.
+
+You acknowledge that the Software and Microsoft Products and Services (1) are not designed, intended or made available as a medical device(s), and (2) are not designed or intended to be a substitute for professional medical advice, diagnosis, treatment, or judgment and should not be used to replace or as a substitute for professional medical advice, diagnosis, treatment, or judgment. Customer is solely responsible for displaying and/or obtaining appropriate consents, warnings, disclaimers, and acknowledgements to end users of Customer’s implementation of the Online Services.
+
+You acknowledge the Software is not subject to SOC 1 and SOC 2 compliance audits. No Microsoft technology, nor any of its component technologies, including the Software, is intended or made available as a substitute for the professional advice, opinion, or judgement of a certified financial services professional. Do not use the Software to replace, substitute, or provide professional financial advice or judgment.  
+
+BY ACCESSING OR USING THE SOFTWARE, YOU ACKNOWLEDGE THAT THE SOFTWARE IS NOT DESIGNED OR INTENDED TO SUPPORT ANY USE IN WHICH A SERVICE INTERRUPTION, DEFECT, ERROR, OR OTHER FAILURE OF THE SOFTWARE COULD RESULT IN THE DEATH OR SERIOUS BODILY INJURY OF ANY PERSON OR IN PHYSICAL OR ENVIRONMENTAL DAMAGE (COLLECTIVELY, “HIGH-RISK USE”), AND THAT YOU WILL ENSURE THAT, IN THE EVENT OF ANY INTERRUPTION, DEFECT, ERROR, OR OTHER FAILURE OF THE SOFTWARE, THE SAFETY OF PEOPLE, PROPERTY, AND THE ENVIRONMENT ARE NOT REDUCED BELOW A LEVEL THAT IS REASONABLY, APPROPRIATE, AND LEGAL, WHETHER IN GENERAL OR IN A SPECIFIC INDUSTRY. BY ACCESSING THE SOFTWARE, YOU FURTHER ACKNOWLEDGE THAT YOUR HIGH-RISK USE OF THE SOFTWARE IS AT YOUR OWN RISK.

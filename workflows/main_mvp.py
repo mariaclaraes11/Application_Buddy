@@ -21,7 +21,12 @@ Usage:
 import asyncio
 import os
 import re
+import sys
 from dotenv import load_dotenv
+
+# Add parent directory to Python path so we can import from src
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from src.agents.clean_orchestrator import CleanOrchestrator
 from src.config import Config
 
