@@ -272,17 +272,16 @@ class AnalyzerExecutor(Executor):
         
         # Print full analysis output
         print("\n" + "=" * 60)
-        print("📊 FULL ANALYSIS OUTPUT")
+        print(" FULL ANALYSIS OUTPUT")
         print("=" * 60)
         print(analysis_text)
         print("\n" + "=" * 60)
-        print("📋 SUMMARY")
+        print(" SUMMARY")
         print("=" * 60)
-        print(f"📈 Preliminary Score: {score}/100")
-        print(f"🔍 Identified Gaps ({len(gaps)}):")
+        print(f" Identified Gaps ({len(gaps)}):")
         for i, gap in enumerate(gaps, 1):
             print(f"   {i}. {gap}")
-        print(f"\n➡️  {'Proceeding to Q&A...' if needs_qna else 'Skipping Q&A (high score!)'}")
+        print(f"\n  {'Proceeding to Q&A...' if needs_qna else 'Skipping Q&A (high score!)'}")
         print("=" * 60 + "\n")
         
         # Send to next executor (routing handled by conditional edges)
@@ -563,8 +562,15 @@ Based on the initial analysis and the Q&A conversation insights, provide a compr
         recommendation = result.messages[-1].text
         logger.info("Recommendation generated (from Q&A path)")
         
+        # Print recommendation for visibility
+        print("\n" + "=" * 60)
+        print(" FINAL RECOMMENDATION")
+        print("=" * 60)
+        print(recommendation)
+        print("=" * 60 + "\n")
+        
         # Yield as ChatMessage for agent output
-        ctx.yield_output(ChatMessage(role=Role.ASSISTANT, text=recommendation))
+        await ctx.yield_output(ChatMessage(role=Role.ASSISTANT, text=recommendation))
     
     @handler
     async def generate_direct(self, analysis_result: AnalysisResult, ctx: WorkflowContext) -> None:
@@ -585,8 +591,15 @@ Based on the analysis, provide a comprehensive final recommendation.""")
         recommendation = result.messages[-1].text
         logger.info("Recommendation generated (direct path)")
         
+        # Print recommendation for visibility
+        print("\n" + "=" * 60)
+        print("📝 FINAL RECOMMENDATION")
+        print("=" * 60)
+        print(recommendation)
+        print("=" * 60 + "\n")
+        
         # Yield as ChatMessage for agent output
-        ctx.yield_output(ChatMessage(role=Role.ASSISTANT, text=recommendation))
+        await ctx.yield_output(ChatMessage(role=Role.ASSISTANT, text=recommendation))
 
 
 # ============================================================================

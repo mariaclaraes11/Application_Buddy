@@ -66,12 +66,12 @@ async def test_workflow():
                 break
         
         if not hitl_call:
-            # Workflow complete
+            # Workflow complete - recommendation already printed by RecommendationExecutor
             print("\n" + "=" * 60)
-            print("WORKFLOW COMPLETE")
+            print(" WORKFLOW COMPLETE")
             print("=" * 60)
-            print("\nFinal response:")
-            print(response.messages[-1].text if response.messages else "No response")
+            print("\n The recommendation was printed above by the workflow.")
+            print("=" * 60)
             break
         
         # Extract the question from the HITL request
@@ -87,15 +87,15 @@ async def test_workflow():
                 if isinstance(args, dict) and 'data' in args:
                     data = args['data']
                     if hasattr(data, 'question'):
-                        print(f"\n🤖 Advisor: {data.question}")
+                        print(f"\n Advisor: {data.question}")
                     elif isinstance(data, dict) and 'question' in data:
-                        print(f"\n🤖 Advisor: {data['question']}")
+                        print(f"\n Advisor: {data['question']}")
                     else:
-                        print(f"\n🤖 Advisor is asking a question...")
+                        print(f"\n Advisor is asking a question...")
                 else:
-                    print(f"\n🤖 Advisor is asking a question...")
+                    print(f"\n Advisor is asking a question...")
         except Exception as e:
-            print(f"\n🤖 Advisor is asking a question... (debug: {e})")
+            print(f"\n Advisor is asking a question... (debug: {e})")
         
         # Get user input
         print()
