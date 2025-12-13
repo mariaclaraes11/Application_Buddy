@@ -65,12 +65,25 @@ class QnAQuestion:
     gaps_remaining: List[str]
     exchange_count: int
     in_wrap_up_mode: bool
+    
+    def to_dict(self) -> dict:
+        """Convert to dict for JSON serialization (needed for HITL)."""
+        return {
+            "question": self.question,
+            "gaps_remaining": self.gaps_remaining,
+            "exchange_count": self.exchange_count,
+            "in_wrap_up_mode": self.in_wrap_up_mode
+        }
 
 
 @dataclass
 class QnAAnswer:
     """Human's answer to Q&A question."""
     answer: str
+    
+    def to_dict(self) -> dict:
+        """Convert to dict for JSON serialization."""
+        return {"answer": self.answer}
 
 
 @dataclass
