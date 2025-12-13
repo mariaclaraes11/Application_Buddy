@@ -101,6 +101,46 @@ class FinalRecommendation:
 
 
 # ============================================================================
+# Input Collection Types (for HITL welcome flow)
+# ============================================================================
+
+@dataclass
+class CVRequest:
+    """Request for CV input (welcome message)."""
+    message: str
+    
+    def to_dict(self) -> dict:
+        return {"message": self.message}
+
+
+@dataclass
+class CVResponse:
+    """User's CV response."""
+    cv_text: str
+    
+    def to_dict(self) -> dict:
+        return {"cv_text": self.cv_text}
+
+
+@dataclass
+class JobRequest:
+    """Request for job description."""
+    message: str
+    
+    def to_dict(self) -> dict:
+        return {"message": self.message}
+
+
+@dataclass
+class JobResponse:
+    """User's job description response."""
+    job_description: str
+    
+    def to_dict(self) -> dict:
+        return {"job_description": self.job_description}
+
+
+# ============================================================================
 # Helper Functions (unchanged from original)
 # ============================================================================
 
@@ -217,6 +257,74 @@ def skip_qna_condition(message: Any) -> bool:
 
 
 # ============================================================================
+# Input Collector Executor (initiates conversation)
+# ============================================================================
+
+class InputCollectorExecutor(Executor):
+    """Collects CV and job description via HITL before analysis.
+    
+    This executor initiates the conversation with a welcome message,
+    collects the CV, acknowledges it, then collects the job description.
+    """
+    
+    def __init__(self):
+        super().__init__(id="input-collector-executor")
+        self._cv_text: Optional[str] = None
+    
+    @handler
+    async def handle_chat_messages(self, messages: list[ChatMessage], ctx: WorkflowContext) -> None:
+        """Handle initial trigger - send welcome message and ask for CV."""
+        logger.info("InputCollector: Starting conversation with welcome message")
+        
+        # Send welcome message and request CV
+        await ctx.request_info(
+            request_data=CVRequest(
+                message="Welcome to Application Buddy! I'll help you evaluate if a job is right for you. Let's start - please paste your CV:"
+            ),
+            response_type=CVResponse
+        )
+    
+    @response_handler
+    async def handle_cv_response(
+        self,
+        original_request: CVRequest,
+        response: CVResponse,
+        ctx: WorkflowContext
+    ) -> None:
+        """Receive CV, acknowledge, and ask for job description."""
+        logger.info(f"InputCollector: Received CV ({len(response.cv_text)} chars)")
+        
+        # Store CV for later
+        self._cv_text = response.cv_text
+        
+        # Acknowledge CV and ask for job description
+        await ctx.request_info(
+            request_data=JobRequest(
+                message="Great, I've got your CV! Now please paste the job description you're interested in:"
+            ),
+            response_type=JobResponse
+        )
+    
+    @response_handler
+    async def handle_job_response(
+        self,
+        original_request: JobRequest,
+        response: JobResponse,
+        ctx: WorkflowContext
+    ) -> None:
+        """Receive job description and send both to Analyzer."""
+        logger.info(f"InputCollector: Received job description ({len(response.job_description)} chars)")
+        
+        # Send CVInput to analyzer
+        await ctx.send_message(
+            CVInput(
+                cv_text=self._cv_text,
+                job_description=response.job_description
+            )
+        )
+
+
+# ============================================================================
 # Analyzer Executor
 # ============================================================================
 
@@ -228,39 +336,11 @@ class AnalyzerExecutor(Executor):
         self._analyzer = analyzer_agent
     
     @handler
-    async def handle_chat_messages(self, messages: list[ChatMessage], ctx: WorkflowContext) -> None:
-        """Handle input from agent interface (list[ChatMessage]).
+    async def handle_cv_input(self, input_data: CVInput, ctx: WorkflowContext) -> None:
+        """Handle CVInput from InputCollectorExecutor."""
+        logger.info("Received CVInput from InputCollector")
         
-        Expected format in first message:
-        CV: <cv_text>
-        ---
-        JOB: <job_description>
-        """
-        logger.info("Received chat messages, parsing CV and job description...")
-        
-        # Get the last user message
-        user_text = ""
-        for msg in reversed(messages):
-            if msg.text:
-                user_text = msg.text
-                break
-        
-        # Parse CV and job description from message
-        if "---" in user_text:
-            parts = user_text.split("---", 1)
-            cv_text = parts[0].replace("CV:", "").strip()
-            job_description = parts[1].replace("JOB:", "").strip()
-        else:
-            # Assume whole message is CV + job description
-            cv_text = user_text
-            job_description = ""
-        
-        input_data = CVInput(cv_text=cv_text, job_description=job_description)
-        await self.analyze(input_data, ctx)
-    
-    @handler
-    async def analyze(self, input_data: CVInput, ctx: WorkflowContext) -> None:
-        """Analyze CV and determine if Q&A is needed."""
+        # Analyze CV and determine if Q&A is needed
         logger.info("Starting CV analysis...")
         
         result = await self._analyzer.run(f"""**CANDIDATE CV:**
@@ -657,6 +737,10 @@ def build_cv_workflow_agent():
     workflow = (
         WorkflowBuilder()
         .register_executor(
+            lambda: InputCollectorExecutor(),  # Input collector starts the flow
+            name="input-collector"
+        )
+        .register_executor(
             lambda: AnalyzerExecutor(agents["analyzer"]),
             name="analyzer"
         )
@@ -668,6 +752,8 @@ def build_cv_workflow_agent():
             lambda: RecommendationExecutor(agents["recommendation"]),
             name="recommendation"
         )
+        # Input collector → Analyzer
+        .add_edge("input-collector", "analyzer")
         # Conditional routing from analyzer: if high score → skip Q&A, else do Q&A
         .add_switch_case_edge_group(
             "analyzer",
@@ -678,7 +764,7 @@ def build_cv_workflow_agent():
         )
         # Q&A completion leads to recommendation
         .add_edge("qna", "recommendation")
-        .set_start_executor("analyzer")
+        .set_start_executor("input-collector")  # Start with input collector
         .build()
         .as_agent()
     )
@@ -694,15 +780,12 @@ def build_cv_workflow_agent():
 async def test_workflow():
     """Test the workflow locally."""
     from agent_framework import ChatMessage, FunctionCallContent, FunctionResultContent, Role, WorkflowAgent
+    import json
     
     agent = build_cv_workflow_agent()
     
-    # Sample input
-    cv_text = "Your CV text here..."
-    job_text = "Your job description here..."
-    
-    # Start workflow
-    response = await agent.run(f"Analyze this CV:\n{cv_text}\n\nFor this job:\n{job_text}")
+    # Start workflow with empty message (agent initiates conversation)
+    response = await agent.run("start")
     
     # Handle HITL loop
     while True:
@@ -716,16 +799,40 @@ async def test_workflow():
         
         if not hitl_call:
             # Workflow complete
-            print("Final response:", response.messages[-1].text)
+            print("\n" + "=" * 60)
+            print("WORKFLOW COMPLETE")
+            print("=" * 60)
+            if response.messages:
+                print(response.messages[-1].text)
+            else:
+                print("(No final message - recommendation was already printed above)")
             break
         
-        # Get user input
-        user_answer = input("Your response: ")
+        # Parse the request to determine what type of input is needed
+        args = json.loads(hitl_call.arguments) if isinstance(hitl_call.arguments, str) else hitl_call.arguments
+        request_data = args.get("data", {})
+        
+        # Display the message and get user input
+        message = request_data.get("message") or request_data.get("question", "Your response:")
+        print(f"\n🤖 Agent: {message}")
+        user_input = input("\n👤 You: ")
+        
+        # Determine response type based on request
+        # Check job description FIRST (it contains "CV" too, so order matters)
+        if "message" in request_data and "job description" in request_data.get("message", "").lower():
+            # Job description request
+            result_data = JobResponse(job_description=user_input)
+        elif "message" in request_data and "paste your cv" in request_data.get("message", "").lower():
+            # CV request (welcome message)
+            result_data = CVResponse(cv_text=user_input)
+        else:
+            # Q&A answer
+            result_data = QnAAnswer(answer=user_input)
         
         # Send back to workflow
         result = FunctionResultContent(
             call_id=hitl_call.call_id,
-            result=QnAAnswer(answer=user_answer)
+            result=result_data
         )
         response = await agent.run(ChatMessage(role=Role.TOOL, contents=[result]))
 
