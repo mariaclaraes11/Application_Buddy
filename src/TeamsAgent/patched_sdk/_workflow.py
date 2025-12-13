@@ -704,7 +704,10 @@ class Workflow(DictConvertible):
                 try:
                     import dataclasses
                     if dataclasses.is_dataclass(pending_request.response_type):
-                        response = pending_request.response_type(**response)
+                        # Handle wrapped response format: {"request_id": "...", "data": {...}}
+                        # The actual data to deserialize is in the "data" field
+                        data_to_use = response.get("data", response) if "data" in response else response
+                        response = pending_request.response_type(**data_to_use)
                 except (TypeError, Exception):
                     pass  # Fall through to type check
             

@@ -207,6 +207,21 @@ class WorkflowAgent(BaseAgent):
         """
         # Determine the event stream based on whether we have function responses
         if bool(self.pending_requests):
+            # PATCH: Check if the input contains function responses for our pending requests
+            # If not, this is a NEW conversation - clear stale state and start fresh
+            has_function_response = any(
+                isinstance(content, (FunctionApprovalResponseContent, FunctionResultContent))
+                for message in input_messages
+                for content in message.contents
+            )
+            
+            if not has_function_response:
+                # New conversation started while we had pending requests from previous conversation
+                # Clear stale state and treat as fresh start
+                logger.info(f"New conversation detected - clearing {len(self.pending_requests)} stale pending requests")
+                self._pending_requests.clear()
+        
+        if bool(self.pending_requests):
             # This is a continuation - use send_responses_streaming to send function responses back
             logger.info(f"Continuing workflow to address {len(self.pending_requests)} requests")
 

@@ -16,16 +16,19 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from agent_framework import (
+    AgentRunResponseUpdate,
     ChatAgent,
     ChatMessage,
     Executor,
     Role,
+    TextContent,
     WorkflowBuilder,
     WorkflowContext,
     handler,
     response_handler,
 )
 from agent_framework._workflows._edge import Case, Default
+from agent_framework._workflows._events import AgentRunUpdateEvent
 from agent_framework.azure import AzureOpenAIChatClient
 from azure.identity import DefaultAzureCredential
 
@@ -662,8 +665,18 @@ Based on the initial analysis and the Q&A conversation insights, provide a compr
         print(recommendation)
         print("=" * 60 + "\n")
         
-        # Yield as ChatMessage for agent output
-        await ctx.yield_output(ChatMessage(role=Role.ASSISTANT, text=recommendation))
+        # Emit as AgentRunUpdateEvent so it appears in HTTP response
+        from datetime import datetime, timezone
+        import uuid
+        update = AgentRunResponseUpdate(
+            contents=[TextContent(text=recommendation)],
+            role=Role.ASSISTANT,
+            author_name="recommendation-executor",
+            response_id=str(uuid.uuid4()),
+            message_id=str(uuid.uuid4()),
+            created_at=datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+        )
+        await ctx.add_event(AgentRunUpdateEvent(executor_id=self.id, data=update))
     
     @handler
     async def generate_direct(self, analysis_result: AnalysisResult, ctx: WorkflowContext) -> None:
@@ -691,8 +704,18 @@ Based on the analysis, provide a comprehensive final recommendation.""")
         print(recommendation)
         print("=" * 60 + "\n")
         
-        # Yield as ChatMessage for agent output
-        await ctx.yield_output(ChatMessage(role=Role.ASSISTANT, text=recommendation))
+        # Emit as AgentRunUpdateEvent so it appears in HTTP response
+        from datetime import datetime, timezone
+        import uuid
+        update = AgentRunResponseUpdate(
+            contents=[TextContent(text=recommendation)],
+            role=Role.ASSISTANT,
+            author_name="recommendation-executor",
+            response_id=str(uuid.uuid4()),
+            message_id=str(uuid.uuid4()),
+            created_at=datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+        )
+        await ctx.add_event(AgentRunUpdateEvent(executor_id=self.id, data=update))
 
 
 # ============================================================================
