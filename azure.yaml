@@ -2,11 +2,11 @@
 
 requiredVersions:
     extensions:
-        azure.ai.agents: '>=0.1.0-preview'
-name: ai-foundry-starter-basic
+        azure.ai.agents: latest
+name: application-buddy
 services:
     TeamsOrchestrator:
-        project: src/TeamsAgent
+        project: src/TeamsOrchestrator
         host: azure.ai.agent
         language: docker
         docker:
@@ -23,7 +23,7 @@ services:
                 - model:
                     format: OpenAI
                     name: gpt-4o
-                    version: "2024-11-20"
+                    version: "2024-08-06"
                   name: gpt-4o
                   sku:
                     capacity: 10
@@ -31,3 +31,4 @@ services:
 infra:
     provider: bicep
     path: ./infra
+    module: main
