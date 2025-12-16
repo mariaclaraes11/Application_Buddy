@@ -600,6 +600,10 @@ class BrainBasedWorkflowExecutor(Executor):
         if user_lower in ['done', 'n', 'no', 'nothing', "that's all", "thats all"]:
             logger.info("User ended Q&A - generating recommendation")
             conv_state.state = "complete"
+            
+            # Send status message so user knows it's working
+            await emit_response(ctx, "📝 **Preparing your recommendation...**\n\n*Summarizing our conversation and generating personalized advice. This may take a moment.*", self.id)
+            
             qna_summary = await self._get_qna_summary(conv_state)
             await self._generate_recommendation(ctx, conv_state, qna_summary)
             return
@@ -653,10 +657,13 @@ Don't directly mention 'gaps' - just ask about related experiences. Be conversat
     async def _get_qna_summary(self, conv_state: ConversationState) -> str:
         """Get final summary from Q&A agent."""
         if conv_state.qna_thread is None:
+            logger.info("[Q&A SUMMARY] No thread, skipping summary")
             return "No Q&A conversation occurred."
         
+        logger.info("[Q&A SUMMARY] Requesting summary from Q&A agent...")
         summary_prompt = "Please provide your final assessment based on our conversation."
         result = await self._qna_agent.run(summary_prompt, thread=conv_state.qna_thread)
+        logger.info("[Q&A SUMMARY] Summary received")
         return result.messages[-1].text
     
     async def _generate_recommendation(
