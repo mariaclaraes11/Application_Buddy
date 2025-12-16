@@ -65,6 +65,7 @@ class ConversationState:
     qna_history: List[str] = field(default_factory=list)
     brain_thread: Any = None  # Thread for Brain agent memory
     qna_thread: Any = None    # Thread for Q&A agent memory
+    validation_ready: bool = False  # Set by validation agent when all gaps addressed
 
 
 def get_conversation_state(conv_id: str) -> ConversationState:
@@ -126,12 +127,20 @@ def get_conversation_id_from_context() -> str:
 # Helper to emit response to HTTP (not just inter-executor messaging)
 # ============================================================================
 
+MAX_TEAMS_MESSAGE_LENGTH = 2000  # Keep responses concise for Teams
+
 async def emit_response(ctx: WorkflowContext, text: str, executor_id: str = "brain-workflow") -> None:
     """Emit a text response that will appear in the HTTP response.
     
     Unlike ctx.send_message() which sends between executors,
     this emits an AgentRunUpdateEvent that the server converts to HTTP response.
     """
+    # Truncate if too long for Teams
+    original_len = len(text)
+    if original_len > MAX_TEAMS_MESSAGE_LENGTH:
+        text = text[:MAX_TEAMS_MESSAGE_LENGTH - 50] + "\n\n*(continued...)*"
+        logger.warning(f"Response truncated from {original_len} to {len(text)} chars")
+    
     update = AgentRunResponseUpdate(
         contents=[TextContent(text=text)],
         role=Role.ASSISTANT,
@@ -243,6 +252,10 @@ async def check_validation_status(
     is_termination_attempt: bool = False
 ) -> tuple[bool, List[str]]:
     """Check validation status and return readiness and updated gaps."""
+    
+    logger.info(f"[VALIDATION] Called with {len(current_gaps)} gaps: {current_gaps}")
+    logger.info(f"[VALIDATION] Conversation history length: {len(conversation_history)}")
+    
     recent_conversation = "\n".join(conversation_history[-4:])
     
     if is_termination_attempt:
@@ -260,29 +273,40 @@ User wants to end conversation. Please provide final readiness assessment."""
 Recent conversation exchange:
 {recent_conversation}"""
     
+    logger.info(f"[VALIDATION] Input to agent: {validation_input[:300]}...")
+    
     try:
         validation_result = await validation_agent.run(validation_input)
         validation_response = validation_result.messages[-1].text
+        logger.info(f"[VALIDATION] Full response: {validation_response}")
+        
         validation_ready = "READY" in validation_response.upper()
         
         remaining_gaps = current_gaps.copy()
         removed_gaps = []
+        
         if "REMOVE:" in validation_response:
             remove_section = validation_response.split("REMOVE:")[1].split("KEEP:")[0] if "KEEP:" in validation_response else validation_response.split("REMOVE:")[1].split("READINESS:")[0]
-            remove_text = remove_section.strip()
+            remove_text = remove_section.strip().lower()
+            logger.info(f"[VALIDATION] Remove section extracted: '{remove_text}'")
             
             for gap in current_gaps:
-                if gap in remove_text:
+                gap_lower = gap.lower()
+                # More flexible matching
+                if gap_lower in remove_text or any(word in remove_text for word in gap_lower.split() if len(word) > 4):
                     remaining_gaps.remove(gap)
                     removed_gaps.append(gap)
+                    logger.info(f"[VALIDATION] ✅ Removed gap: {gap}")
+        else:
+            logger.info("[VALIDATION] ⚠️ No REMOVE: section found in response")
         
         if removed_gaps:
-            logger.info(f"Gaps addressed: {', '.join(removed_gaps)}")
-            logger.info(f"Remaining gaps: {len(remaining_gaps)}")
+            logger.info(f"[VALIDATION] ✅ Total gaps addressed this turn: {', '.join(removed_gaps)}")
+        logger.info(f"[VALIDATION] 📋 Remaining gaps: {len(remaining_gaps)} - {remaining_gaps}")
         
         return validation_ready, remaining_gaps
     except Exception as e:
-        logger.warning(f"Validation check failed: {e}")
+        logger.warning(f"[VALIDATION] ❌ Check failed with error: {e}")
         return False, current_gaps
 
 
@@ -593,65 +617,64 @@ class BrainBasedWorkflowExecutor(Executor):
         user_input: str,
         conversation_id: str
     ) -> None:
-        """Handle Q&A conversation turn."""
+        """Handle Q&A conversation turn. Q&A just converses - validation tracks gaps."""
         
-        # Check for done commands
+        # Check for done command - IMMEDIATE exit to recommendation
         user_lower = user_input.lower().strip()
-        if user_lower in ['done', 'n', 'no', 'nothing', "that's all", "thats all"]:
-            logger.info("User ended Q&A - generating recommendation")
+        if user_lower == 'done':
+            logger.info("User typed 'done' - immediate exit to recommendation")
             conv_state.state = "complete"
             
-            # Send status message so user knows it's working
-            await emit_response(ctx, "📝 **Preparing your recommendation...**\n\n*Summarizing our conversation and generating personalized advice. This may take a moment.*", self.id)
+            await emit_response(ctx, "📝 **Preparing your recommendation...**\n\n*This may take a moment.*", self.id)
             
-            qna_summary = await self._get_qna_summary(conv_state)
+            qna_summary = "\n".join(conv_state.qna_history[-8:]) if conv_state.qna_history else "Brief Q&A conversation."
             await self._generate_recommendation(ctx, conv_state, qna_summary)
             return
         
-        # Add user input to history
+        # Regular Q&A turn - just have conversation
         conv_state.qna_history.append(f"User: {user_input}")
         
-        # Ensure thread exists
         if conv_state.qna_thread is None:
             conv_state.qna_thread = self._qna_agent.get_new_thread()
         
-        # Determine if we should target a specific gap
+        # Every 5 exchanges, validation steers toward a gap (if any remain)
         user_exchanges = len([h for h in conv_state.qna_history if h.startswith("User:")])
         should_target_gap = (user_exchanges > 0 and user_exchanges % 5 == 0 and conv_state.gaps)
         
         if should_target_gap:
-            priority_gaps = [gap for gap in conv_state.gaps if any(keyword in gap.lower() 
-                for keyword in ['networking', 'communication', 'teamwork', 'authorization', 'location'])]
-            target_gap = priority_gaps[0] if priority_gaps else conv_state.gaps[0]
-            
+            target_gap = conv_state.gaps[0]
             qna_prompt = f"""The user just responded: "{user_input}"
 
-Now I'd like you to acknowledge their response briefly, then naturally steer the conversation to explore their experience with: {target_gap}
+Acknowledge their response briefly, then naturally steer to explore: {target_gap}
 
-Don't directly mention 'gaps' - just ask about related experiences. Be conversational."""
+Don't mention 'gaps' - just ask about related experiences. Be conversational and brief."""
+            logger.info(f"[Q&A] Steering toward gap: {target_gap}")
         else:
             qna_prompt = f"User response: {user_input}"
         
         # Get Q&A response
-        logger.info("[Q&A AGENT] Generating follow-up question...")
+        logger.info("[Q&A AGENT] Generating response...")
         result = await self._qna_agent.run(qna_prompt, thread=conv_state.qna_thread)
         response = result.messages[-1].text
         conv_state.qna_history.append(f"Advisor: {response}")
         
-        # Update gaps via validation
-        logger.info("[VALIDATION AGENT] Checking gap status...")
-        _, updated_gaps = await check_validation_status(
+        # Validation agent updates gaps and decides readiness
+        logger.info("[VALIDATION] Checking status...")
+        validation_ready, updated_gaps = await check_validation_status(
             self._validation_agent,
             conv_state.gaps,
             conv_state.qna_history
         )
         conv_state.gaps = updated_gaps
+        conv_state.validation_ready = validation_ready
         
-        # Check for wrap-up question
-        if detect_termination_question(response):
-            response += "\n\n*(Say 'done' or 'n' when you're ready for your recommendation)*"
+        # Show status based on validation
+        if conv_state.validation_ready:
+            response += "\n\n✅ *All set! Say 'done' when you're ready for your recommendation.*"
+        else:
+            remaining = len(conv_state.gaps)
+            response += f"\n\n*({remaining} area(s) left to explore)*"
         
-        # Add Q&A agent indicator
         await emit_response(ctx, f"**[Q&A Agent]** {response}", self.id)
     
     async def _get_qna_summary(self, conv_state: ConversationState) -> str:
@@ -672,7 +695,7 @@ Don't directly mention 'gaps' - just ask about related experiences. Be conversat
         conv_state: ConversationState,
         qna_insights: str
     ) -> None:
-        """Generate final recommendation."""
+        """Generate final recommendation and send as multiple messages."""
         
         logger.info("[RECOMMENDER] Generating final recommendation...")
         
@@ -693,18 +716,53 @@ Please provide your recommendation."""
         result = await self._recommender.run(recommendation_prompt)
         recommendation = result.messages[-1].text
         
-        # Add agent indicator and follow-up prompt after recommendation
-        recommendation_with_header = f"**[Recommendation Agent]**\n\n{recommendation}"
+        # Split recommendation into sections and send as separate messages
+        sections = self._split_recommendation_into_sections(recommendation)
+        
+        # Send header first
+        await emit_response(ctx, "**[Recommendation Agent]** Here's my assessment:", self.id)
+        
+        # Send each section as a separate message
+        for section in sections:
+            if section.strip():
+                await emit_response(ctx, section.strip(), self.id)
+        
+        # Send follow-up as final message
         follow_up = (
-            "\n\n---\n\n"
             "🔄 **What's next?**\n\n"
-            "Would you like to:\n"
             "• Try a **new job description** (just paste it)\n"
             "• Update your **CV** and try again\n"
             "• Type **'reset'** to start completely fresh"
         )
+        await emit_response(ctx, follow_up, self.id)
+    
+    def _split_recommendation_into_sections(self, recommendation: str) -> list:
+        """Split recommendation text into logical sections for separate messages."""
+        import re
         
-        await emit_response(ctx, recommendation_with_header + follow_up, self.id)
+        # Split by markdown headers (## or **Section:**)
+        # Pattern matches ## Header or **Header** at start of line
+        pattern = r'(?=^##\s|\*\*[A-Z])'
+        sections = re.split(pattern, recommendation, flags=re.MULTILINE)
+        
+        # If no sections found, split by double newlines
+        if len(sections) <= 1:
+            sections = recommendation.split('\n\n')
+        
+        # Group small sections together (under 300 chars)
+        result = []
+        current = ""
+        for section in sections:
+            if len(current) + len(section) < 1500:  # Keep under limit
+                current += section
+            else:
+                if current.strip():
+                    result.append(current)
+                current = section
+        if current.strip():
+            result.append(current)
+        
+        return result if result else [recommendation]
     
     async def _handle_post_recommendation(
         self,
