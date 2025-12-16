@@ -1,12 +1,12 @@
 """
-CV Analysis Workflow - State-Based Pattern for Teams Compatibility
+CV Analysis Workflow - Brain-Based Pattern for Teams/Foundry Compatibility
 
 Architecture:
-Same flow as TeamsOrchestrator but WITHOUT request_info HITL.
-State is tracked via conversation history instead of generator suspension.
+Brain agent handles conversational collection of CV and job description.
+State is persisted in-memory keyed by conversation_id.
 
-Input → Analyzer → (Conditional) → Q&A + Validation → Recommendation
-                               ↘ Recommendation (skip Q&A if score ≥ 80)
+Brain → (collects CV & Job) → Analyzer → Q&A → Recommendation
+                                     ↘ (skip Q&A if score ≥ 80)
 
 Compatible with: Teams, Foundry Playground, any UI.
 """
@@ -30,7 +30,6 @@ from agent_framework import (
     WorkflowContext,
     handler,
 )
-from agent_framework._workflows._edge import Case, Default
 from agent_framework._workflows._events import AgentRunUpdateEvent
 from agent_framework.azure import AzureOpenAIChatClient
 from azure.identity import DefaultAzureCredential
@@ -46,10 +45,88 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
+# Conversation State Store (in-memory, keyed by conversation_id)
+# ============================================================================
+
+# Global store for conversation states
+# Key: conversation_id, Value: ConversationState dataclass
+_conversation_store: Dict[str, "ConversationState"] = {}
+
+
+@dataclass
+class ConversationState:
+    """Tracks state for a single conversation."""
+    state: str = "collecting"  # collecting, waiting_confirmation, analyzing, qna, complete
+    cv_text: Optional[str] = None
+    job_text: Optional[str] = None
+    analysis_text: Optional[str] = None
+    gaps: List[str] = field(default_factory=list)
+    score: int = 0
+    qna_history: List[str] = field(default_factory=list)
+    brain_thread: Any = None  # Thread for Brain agent memory
+    qna_thread: Any = None    # Thread for Q&A agent memory
+
+
+def get_conversation_state(conv_id: str) -> ConversationState:
+    """Get or create conversation state."""
+    if conv_id not in _conversation_store:
+        _conversation_store[conv_id] = ConversationState()
+        logger.info(f"Created new conversation state for: {conv_id}")
+    return _conversation_store[conv_id]
+
+
+def get_conversation_id_from_context() -> str:
+    """Get conversation_id from request_context (set by agentserver middleware).
+    
+    In Foundry Playground: conversation_id changes per message (unusable)
+    In Teams: conversation_id SHOULD be stable per chat
+    
+    We track if we've seen this ID before to detect stability.
+    """
+    from azure.ai.agentserver.core.logger import request_context
+    
+    # request_context is a ContextVar - .get() returns the whole dict, not a specific key
+    try:
+        ctx_dict = request_context.get() or {}
+        conv_id = ctx_dict.get("azure.ai.agentserver.conversation_id", "") or ""
+        conv_id = str(conv_id) if conv_id else ""
+    except (LookupError, TypeError, AttributeError):
+        conv_id = ""
+    
+    if conv_id:
+        # Track if this conversation_id has been seen before
+        if not hasattr(get_conversation_id_from_context, '_seen_ids'):
+            get_conversation_id_from_context._seen_ids = set()
+        
+        was_seen = conv_id in get_conversation_id_from_context._seen_ids
+        get_conversation_id_from_context._seen_ids.add(conv_id)
+        
+        if was_seen:
+            # This ID was seen before = client is reusing conversation (Teams behavior)
+            logger.info(f"✅ Stable conversation_id detected: {conv_id[:20]}...")
+            return conv_id
+        else:
+            # First time seeing this ID
+            # Check if we have ONLY seen unique IDs (Playground behavior)
+            if len(get_conversation_id_from_context._seen_ids) > 3:
+                # We've seen 3+ different IDs = Playground, use global
+                logger.info(f"⚠️ Unstable conversation_id (Playground mode), using global session")
+                return "global_session"
+            else:
+                # Could be first message in Teams, give it a chance
+                logger.info(f"🔄 New conversation_id: {conv_id[:20]}... (waiting to confirm stability)")
+                return conv_id
+    
+    # No conversation_id at all
+    logger.info("⚠️ No conversation_id in context, using global session")
+    return "global_session"
+
+
+# ============================================================================
 # Helper to emit response to HTTP (not just inter-executor messaging)
 # ============================================================================
 
-async def emit_response(ctx: WorkflowContext, text: str, executor_id: str = "state-workflow") -> None:
+async def emit_response(ctx: WorkflowContext, text: str, executor_id: str = "brain-workflow") -> None:
     """Emit a text response that will appear in the HTTP response.
     
     Unlike ctx.send_message() which sends between executors,
@@ -67,32 +144,22 @@ async def emit_response(ctx: WorkflowContext, text: str, executor_id: str = "sta
 
 
 # ============================================================================
-# Workflow States (for state-based tracking)
+# Workflow States
 # ============================================================================
 
 class WorkflowState(Enum):
     """Possible states in the conversation workflow."""
-    WELCOME = "welcome"
-    WAITING_CV = "waiting_cv"
-    WAITING_JOB = "waiting_job"
-    ANALYZING = "analyzing"
-    QNA = "qna"
-    RECOMMENDING = "recommending"
-    COMPLETE = "complete"
+    COLLECTING = "collecting"  # Brain is collecting CV and job
+    ANALYZING = "analyzing"    # Running CV analysis
+    QNA = "qna"                # Q&A conversation
+    COMPLETE = "complete"       # Recommendation provided
 
 
 # ============================================================================
-# Message Types (kept from original for internal use)
+# Message Types (kept for internal use)
 # ============================================================================
 
 @dataclass
-class CVInput:
-    """Initial input to the workflow."""
-    cv_text: str
-    job_description: str
-
-
-@dataclass 
 class AnalysisResult:
     """Analysis result with routing decision."""
     analysis_json: str
@@ -103,22 +170,8 @@ class AnalysisResult:
     gaps: List[str] = field(default_factory=list)
 
 
-@dataclass
-class QnAComplete:
-    """Signal that Q&A is complete, ready for recommendation."""
-    analysis_result: AnalysisResult
-    qna_insights: str
-    conversation_history: List[str]
-
-
-@dataclass
-class FinalRecommendation:
-    """Final output of the workflow."""
-    recommendation: str
-
-
 # ============================================================================
-# Helper Functions (from original)
+# Helper Functions
 # ============================================================================
 
 def should_run_qna(analysis_text: str) -> tuple[bool, int, list]:
@@ -170,6 +223,19 @@ def detect_termination_question(response: str) -> bool:
     return any(phrase in response.lower() for phrase in termination_phrases) and '?' in response
 
 
+def extract_message_text(msg: ChatMessage) -> str:
+    """Extract text from a ChatMessage."""
+    if hasattr(msg, 'content') and msg.content:
+        text = ""
+        for c in msg.content:
+            if hasattr(c, 'text'):
+                text += c.text
+        return text
+    elif hasattr(msg, 'text'):
+        return msg.text
+    return str(msg)
+
+
 async def check_validation_status(
     validation_agent: ChatAgent, 
     current_gaps: List[str], 
@@ -211,8 +277,8 @@ Recent conversation exchange:
                     removed_gaps.append(gap)
         
         if removed_gaps:
-            print(f"\n Gaps addressed: {', '.join(removed_gaps)}")
-            print(f" Remaining gaps: {len(remaining_gaps)}")
+            logger.info(f"Gaps addressed: {', '.join(removed_gaps)}")
+            logger.info(f"Remaining gaps: {len(remaining_gaps)}")
         
         return validation_ready, remaining_gaps
     except Exception as e:
@@ -221,163 +287,64 @@ Recent conversation exchange:
 
 
 # ============================================================================
-# State Detection from Message History
+# Brain-Based Workflow Executor
 # ============================================================================
 
-# Markers to identify state from assistant messages
-STATE_MARKERS = {
-    "cv_request": "please paste your cv",
-    "job_request": "paste the job description",
-    "analysis_complete": " analysis complete",
-    "recommendation": "## should you apply?",
-}
-
-
-def extract_message_text(msg: ChatMessage) -> str:
-    """Extract text from a ChatMessage."""
-    if hasattr(msg, 'content') and msg.content:
-        text = ""
-        for c in msg.content:
-            if hasattr(c, 'text'):
-                text += c.text
-        return text
-    elif hasattr(msg, 'text'):
-        return msg.text
-    return str(msg)
-
-
-def determine_state_from_history(messages: List[ChatMessage]) -> tuple[WorkflowState, Dict[str, Any]]:
+class BrainBasedWorkflowExecutor(Executor):
     """
-    Determine current workflow state from conversation history.
-    Returns (state, context_data).
-    """
-    context = {
-        "cv_text": None,
-        "job_description": None,
-        "in_qna": False,
-        "in_wrap_up": False,
-    }
+    Brain-based workflow executor that uses in-memory state persistence.
     
-    if not messages:
-        return WorkflowState.WELCOME, context
+    The Brain agent handles natural conversation and collects CV/job.
+    State is persisted per conversation_id so multi-turn works even when
+    Playground/Teams only sends the latest message.
     
-    user_messages = [m for m in messages if m.role == Role.USER]
-    assistant_messages = [m for m in messages if m.role == Role.ASSISTANT]
-    
-    # Get message texts
-    user_texts = [extract_message_text(m) for m in user_messages]
-    assistant_texts = [extract_message_text(m) for m in assistant_messages]
-    
-    last_assistant_text = assistant_texts[-1].lower() if assistant_texts else ""
-    
-    # Check for completion (recommendation already given)
-    for text in assistant_texts:
-        if STATE_MARKERS["recommendation"] in text.lower():
-            return WorkflowState.COMPLETE, context
-    
-    # Check for Q&A mode (analysis was completed)
-    for text in assistant_texts:
-        if STATE_MARKERS["analysis_complete"] in text.lower():
-            # We're in Q&A mode
-            if len(user_texts) >= 2:
-                context["cv_text"] = user_texts[0]
-                context["job_description"] = user_texts[1]
-            context["in_qna"] = True
-            
-            # Check if we're in wrap-up
-            if detect_termination_question(last_assistant_text):
-                context["in_wrap_up"] = True
-            
-            return WorkflowState.QNA, context
-    
-    # Check what assistant has asked for to determine state
-    cv_was_requested = any(STATE_MARKERS["cv_request"] in text.lower() for text in assistant_texts)
-    job_was_requested = any(STATE_MARKERS["job_request"] in text.lower() for text in assistant_texts)
-    
-    # If assistant hasn't asked for CV yet, this is welcome state
-    if not cv_was_requested:
-        return WorkflowState.WELCOME, context
-    
-    # CV was requested - check if user provided it
-    # Count user messages AFTER the CV request
-    cv_request_idx = next(
-        (i for i, text in enumerate(assistant_texts) if STATE_MARKERS["cv_request"] in text.lower()),
-        -1
-    )
-    
-    # User messages count (first user message after CV request is the CV)
-    user_count = len(user_texts)
-    
-    if user_count == 0:
-        # CV requested but not provided yet
-        return WorkflowState.WAITING_CV, context
-    
-    if user_count == 1:
-        # Got CV, check if we asked for job yet
-        context["cv_text"] = user_texts[0]
-        if job_was_requested:
-            return WorkflowState.WAITING_JOB, context
-        else:
-            # Need to ask for job description
-            return WorkflowState.WAITING_JOB, context
-    
-    if user_count == 2:
-        # Got both CV and job - need to analyze
-        context["cv_text"] = user_texts[0]
-        context["job_description"] = user_texts[1]
-        return WorkflowState.ANALYZING, context
-    
-    # More than 2 messages - must be in Q&A
-    if len(user_texts) >= 2:
-        context["cv_text"] = user_texts[0]
-        context["job_description"] = user_texts[1]
-    context["in_qna"] = True
-    return WorkflowState.QNA, context
-
-
-# ============================================================================
-# Single State-Based Executor (replaces multiple HITL executors)
-# ============================================================================
-
-class StateBasedWorkflowExecutor(Executor):
-    """
-    Single executor that handles the entire workflow using state detection.
-    
-    Instead of HITL request_info pauses, this executor:
-    1. Receives the full conversation history each turn
-    2. Determines current state from history
-    3. Performs the appropriate action
-    4. Returns a text response
-    
-    The workflow "advances" by detecting state changes in the conversation.
+    Flow:
+    1. COLLECTING: Brain has natural conversation, collects CV and job
+       - Detects CV via [CV_RECEIVED] marker in Brain response
+       - Detects job via [JOB_RECEIVED] marker in Brain response
+    2. ANALYZING: Run CV analysis when both CV and job are collected
+    3. QNA: Multi-turn Q&A with validation agent tracking gaps
+    4. COMPLETE: Recommendation provided
     """
     
     def __init__(
         self,
+        brain_agent: ChatAgent,
         analyzer_agent: ChatAgent,
         qna_agent: ChatAgent,
         validation_agent: ChatAgent,
         recommender_agent: ChatAgent,
     ):
-        super().__init__(id="state-based-workflow-executor")
+        super().__init__(id="brain-workflow-executor")
+        self._brain = brain_agent
         self._analyzer = analyzer_agent
         self._qna_agent = qna_agent
         self._validation_agent = validation_agent
         self._recommender = recommender_agent
-        
-        # Q&A conversation state
-        self._qna_thread = None
-        self._gaps: List[str] = []
-        self._analysis_text: str = ""
-        self._conversation_history: List[str] = []
     
     @handler
     async def handle_messages(self, messages: List[ChatMessage], ctx: WorkflowContext) -> None:
-        """Main handler - determines state and responds appropriately."""
+        """Main handler - routes based on persisted state."""
         
-        # Determine state from conversation history
-        state, context_data = determine_state_from_history(messages)
-        logger.info(f"State detected: {state.value}")
+        # Get conversation_id for state persistence
+        # DEBUG: Log ALL available context to find stable identifier
+        try:
+            from azure.ai.agentserver.core.logger import request_context
+            ctx_data = request_context.get() or {}
+            logger.info("=== ALL REQUEST CONTEXT KEYS ===")
+            for key, value in ctx_data.items():
+                logger.info(f"  {key}: {value}")
+        except Exception as e:
+            logger.warning(f"Could not inspect request_context: {e}")
+        
+        conversation_id = get_conversation_id_from_context()
+        is_global_session = (conversation_id == "global_session")
+        session_mode = "🌐 Global" if is_global_session else "🔒 Personal"
+        logger.info(f"=== CONVERSATION ID: {conversation_id} ({session_mode}) ===")
+        
+        # Get persisted state for this conversation
+        conv_state = get_conversation_state(conversation_id)
+        logger.info(f"Current state: {conv_state.state}, CV: {conv_state.cv_text is not None}, Job: {conv_state.job_text is not None}")
         
         # Get the latest user input
         user_input = ""
@@ -385,232 +352,331 @@ class StateBasedWorkflowExecutor(Executor):
         if user_messages:
             user_input = extract_message_text(user_messages[-1])
         
-        # Route to appropriate handler
-        if state == WorkflowState.WELCOME:
-            await self._send_welcome(ctx)
+        # Check for status command - tells user which mode
+        if user_input.lower().strip() == 'status':
+            status_msg = f"""**Session Status**
+- Mode: {session_mode} session
+- Conversation ID: `{conversation_id[:20]}...` 
+- State: {conv_state.state}
+- CV: {'✅ Received' if conv_state.cv_text else '❌ Not yet'}
+- Job: {'✅ Received' if conv_state.job_text else '❌ Not yet'}
+
+{"⚠️ Global mode = single user only (Playground)" if is_global_session else "✅ Personal mode = multi-user supported (Teams)"}"""
+            await emit_response(ctx, status_msg, self.id)
+            return
         
-        elif state == WorkflowState.WAITING_JOB:
-            await self._acknowledge_cv_ask_job(ctx, context_data.get("cv_text", ""))
-        
-        elif state == WorkflowState.ANALYZING:
-            await self._run_analysis(
-                ctx, 
-                context_data.get("cv_text", ""),
-                context_data.get("job_description", "")
-            )
-        
-        elif state == WorkflowState.QNA:
-            await self._handle_qna_turn(
-                ctx,
-                user_input,
-                context_data,
-                messages
-            )
-        
-        elif state == WorkflowState.COMPLETE:
+        # Check for reset command - allows user to start fresh
+        if user_input.lower().strip() in ['reset', 'start over', 'new', 'restart', 'clear']:
+            _conversation_store.pop(conversation_id, None)
+            conv_state = get_conversation_state(conversation_id)
             await emit_response(
                 ctx,
-                "Your recommendation has already been provided. Start a new conversation to analyze another job!",
-                self.id
-            )
-    
-    async def _send_welcome(self, ctx: WorkflowContext) -> None:
-        """Send welcome message and ask for CV."""
-        welcome = (
-            "👋 **Welcome to Application Buddy!**\n\n"
-            "I'll help you evaluate if a job is right for you by:\n"
-            "1. Analyzing your CV against the job requirements\n"
-            "2. Having a conversation to understand your experience better\n"
-            "3. Providing a personalized recommendation\n\n"
-            "Let's start - **please paste your CV** (your full resume text):"
-        )
-        await emit_response(ctx, welcome, self.id)
-    
-    async def _acknowledge_cv_ask_job(self, ctx: WorkflowContext, cv_text: str) -> None:
-        """Acknowledge CV receipt and ask for job description."""
-        if not cv_text or len(cv_text.strip()) < 50:
-            await emit_response(
-                ctx,
-                "I didn't receive a valid CV. Please paste your full resume text.",
+                f"🔄 **Session reset!** Let's start fresh.\n\n_({session_mode} session)_\n\nHey! 👋 Welcome to Application Buddy! I help you evaluate if a job is right for you. Share your CV and a job description, and I'll analyze your fit.\n\nWhat would you like to do?",
                 self.id
             )
             return
         
-        response = (
-            f" **Got your CV!** ({len(cv_text)} characters)\n\n"
-            "Now, **please paste the job description** you're interested in:"
-        )
+        logger.info(f"User input ({len(user_input)} chars): {user_input[:100]}...")
+        
+        # Route based on state
+        if conv_state.state == "collecting":
+            await self._handle_collecting(ctx, conv_state, user_input, conversation_id)
+        
+        elif conv_state.state == "waiting_confirmation":
+            await self._handle_confirmation(ctx, conv_state, user_input, conversation_id)
+        
+        elif conv_state.state == "analyzing":
+            # This shouldn't normally be hit (analysis is triggered automatically)
+            # but handle it just in case
+            await self._run_analysis(ctx, conv_state, conversation_id)
+        
+        elif conv_state.state == "qna":
+            await self._handle_qna(ctx, conv_state, user_input, conversation_id)
+        
+        elif conv_state.state == "complete":
+            # After recommendation, allow user to try another job or update CV
+            await self._handle_post_recommendation(ctx, conv_state, user_input, conversation_id)
+    
+    async def _handle_collecting(
+        self, 
+        ctx: WorkflowContext, 
+        conv_state: ConversationState, 
+        user_input: str,
+        conversation_id: str
+    ) -> None:
+        """Brain handles conversation while collecting CV and job."""
+        
+        # Ensure we have a Brain thread for memory
+        if conv_state.brain_thread is None:
+            conv_state.brain_thread = self._brain.get_new_thread()
+            logger.info("Created new Brain thread")
+        
+        # If no user input, send initial greeting
+        if not user_input.strip():
+            result = await self._brain.run("Hi", thread=conv_state.brain_thread)
+            response = result.messages[-1].text
+            await emit_response(ctx, response, self.id)
+            return
+        
+        # Check if user is providing CV (before asking Brain)
+        # If CV not yet received and this is a long message, prepend context for Brain
+        brain_prompt = user_input
+        if conv_state.cv_text is None and len(user_input) > 200:
+            brain_prompt = f"[User is sharing what appears to be a CV/resume]\n\n{user_input}"
+        elif conv_state.cv_text is not None and conv_state.job_text is None and len(user_input) > 150:
+            brain_prompt = f"[User is sharing what appears to be a job description]\n\n{user_input}"
+        
+        # Get Brain's response
+        result = await self._brain.run(brain_prompt, thread=conv_state.brain_thread)
+        response = result.messages[-1].text
+        
+        # Check for state transition markers
+        if "[CV_RECEIVED]" in response:
+            conv_state.cv_text = user_input
+            # Remove the marker from displayed response
+            response = response.replace("[CV_RECEIVED]", "").strip()
+            logger.info(f"CV received ({len(user_input)} chars)")
+        
+        if "[JOB_RECEIVED]" in response:
+            conv_state.job_text = user_input
+            # Remove the marker from displayed response  
+            response = response.replace("[JOB_RECEIVED]", "").strip()
+            logger.info(f"Job description received ({len(user_input)} chars)")
+        
+        # Check if ready to ask for confirmation
+        if conv_state.cv_text is not None and conv_state.job_text is not None and conv_state.state == "collecting":
+            # Both collected - wait for user confirmation before analysis
+            conv_state.state = "waiting_confirmation"
+            logger.info("Both CV and job collected - waiting for user confirmation")
+        
+        # Send Brain's response (which should ask "ready to analyze?")
         await emit_response(ctx, response, self.id)
     
+    async def _handle_confirmation(
+        self,
+        ctx: WorkflowContext,
+        conv_state: ConversationState,
+        user_input: str,
+        conversation_id: str
+    ) -> None:
+        """Handle user confirmation to start analysis."""
+        
+        user_lower = user_input.lower().strip()
+        
+        # Check for NEGATIVE responses first (takes priority)
+        negative_patterns = ['no', 'wait', 'hold on', 'stop', 'different', 'another', 
+                            'not yet', 'cancel', 'nevermind', 'never mind', 'actually']
+        
+        if any(word in user_lower for word in negative_patterns):
+            # User wants to do something else - route through Brain
+            logger.info("User declined analysis or wants to change something")
+            result = await self._brain.run(user_input, thread=conv_state.brain_thread)
+            response = result.messages[-1].text
+            
+            # Check if they're providing a different job or CV
+            if "[CV_RECEIVED]" in response:
+                conv_state.cv_text = user_input
+                conv_state.job_text = None  # Clear job since they're starting over
+                conv_state.state = "collecting"
+                response = response.replace("[CV_RECEIVED]", "").strip()
+                logger.info(f"New CV received ({len(user_input)} chars)")
+            
+            if "[JOB_RECEIVED]" in response:
+                conv_state.job_text = user_input
+                response = response.replace("[JOB_RECEIVED]", "").strip()
+                logger.info(f"New job description received ({len(user_input)} chars)")
+            
+            await emit_response(ctx, response, self.id)
+            return
+        
+        # Check for affirmative responses - must be short and direct
+        affirmative_exact = ['yes', 'yeah', 'yep', 'sure', 'ok', 'okay', 'go', 'y', 
+                             'yes please', 'go ahead', 'do it', 'let\'s go', 'ready', 
+                             'proceed', 'continue', 'analyze', 'analyse', 'start']
+        
+        # For short responses, check if it's primarily affirmative
+        is_short_affirmative = len(user_lower.split()) <= 5 and any(word in user_lower for word in affirmative_exact)
+        
+        if is_short_affirmative:
+            # User confirmed - proceed to analysis
+            conv_state.state = "analyzing"
+            logger.info("User confirmed - proceeding to analysis")
+            await self._run_analysis(ctx, conv_state, conversation_id)
+        else:
+            # User said something else - route through Brain for natural conversation
+            result = await self._brain.run(user_input, thread=conv_state.brain_thread)
+            response = result.messages[-1].text
+            
+            # Check if they're providing a different job or CV
+            if "[CV_RECEIVED]" in response:
+                conv_state.cv_text = user_input
+                response = response.replace("[CV_RECEIVED]", "").strip()
+                logger.info(f"New CV received ({len(user_input)} chars)")
+            
+            if "[JOB_RECEIVED]" in response:
+                conv_state.job_text = user_input
+                response = response.replace("[JOB_RECEIVED]", "").strip()
+                logger.info(f"New job description received ({len(user_input)} chars)")
+            
+            await emit_response(ctx, response, self.id)
+
     async def _run_analysis(
         self, 
         ctx: WorkflowContext, 
-        cv_text: str, 
-        job_description: str
+        conv_state: ConversationState,
+        conversation_id: str
     ) -> None:
-        """Run CV analysis and start Q&A or skip to recommendation."""
+        """Run CV analysis and transition to Q&A or recommendation."""
         
-        logger.info("Running CV analysis...")
+        logger.info("[ANALYZER] Running CV analysis...")
+        
+        # Status message
+        await emit_response(ctx, "🔍 **[Analyzer Agent]** Analyzing your profile against the job requirements...\n\n*This may take a moment.*", self.id)
         
         # Run analyzer
         analysis_prompt = f"""**CANDIDATE CV:**
-{cv_text}
+{conv_state.cv_text}
 
 **JOB DESCRIPTION:**
-{job_description}"""
+{conv_state.job_text}"""
         
         result = await self._analyzer.run(analysis_prompt)
         analysis_text = result.messages[-1].text
-        self._analysis_text = analysis_text
+        conv_state.analysis_text = analysis_text
         
         # Determine if Q&A is needed
         needs_qna, score, gaps = should_run_qna(analysis_text)
-        self._gaps = gaps
+        conv_state.gaps = gaps
+        conv_state.score = score
         
         logger.info(f"Analysis complete. Score: {score}, Needs Q&A: {needs_qna}, Gaps: {len(gaps)}")
         
-        # Print analysis summary
-        print("\n" + "=" * 60)
-        print(" ANALYSIS COMPLETE")
-        print("=" * 60)
-        print(f" Score: {score}/100")
-        print(f" Gaps: {len(gaps)}")
-        for i, gap in enumerate(gaps, 1):
-            print(f"   {i}. {gap}")
-        print("=" * 60 + "\n")
-        
         if needs_qna:
-            # Start Q&A - initialize thread and get first question
-            self._qna_thread = self._qna_agent.get_new_thread()
-            self._conversation_history = []
+            # Transition to Q&A
+            conv_state.state = "qna"
+            conv_state.qna_thread = self._qna_agent.get_new_thread()
+            conv_state.qna_history = []
             
+            # Get first Q&A question
             qna_prompt = f"""**ANALYSIS:**
 {analysis_text}
 
 **CV:**
-{cv_text}
+{conv_state.cv_text}
 
 **JOB DESCRIPTION:**
-{job_description}"""
+{conv_state.job_text}"""
             
-            qna_result = await self._qna_agent.run(qna_prompt, thread=self._qna_thread)
+            qna_result = await self._qna_agent.run(qna_prompt, thread=conv_state.qna_thread)
             first_question = qna_result.messages[-1].text
-            self._conversation_history.append(f"Advisor: {first_question}")
+            conv_state.qna_history.append(f"Advisor: {first_question}")
             
             response = (
-                f" **Analysis complete!**\n\n"
-                f"I found {len(gaps)} areas to explore. Let's chat to understand your experience better.\n\n"
+                f"✅ **[Analyzer Agent]** Analysis complete!\n\n"
+                f"I found {len(gaps)} areas to explore.\n\n"
                 f"---\n\n"
-                f"{first_question}\n\n"
+                f"**[Q&A Agent]** {first_question}\n\n"
                 f"*(Type 'done' anytime to get your final recommendation)*"
             )
             await emit_response(ctx, response, self.id)
         
         else:
-            # High score - skip Q&A, generate recommendation directly
+            # High score - skip Q&A
             logger.info("High score - skipping Q&A, generating recommendation...")
-            await self._generate_recommendation(ctx, cv_text, job_description, "")
+            conv_state.state = "complete"
+            await self._generate_recommendation(ctx, conv_state, "")
     
-    async def _handle_qna_turn(
+    async def _handle_qna(
         self,
         ctx: WorkflowContext,
+        conv_state: ConversationState,
         user_input: str,
-        context_data: Dict[str, Any],
-        messages: List[ChatMessage]
+        conversation_id: str
     ) -> None:
-        """Handle a turn in the Q&A conversation."""
+        """Handle Q&A conversation turn."""
         
-        cv_text = context_data.get("cv_text", "")
-        job_description = context_data.get("job_description", "")
-        in_wrap_up = context_data.get("in_wrap_up", False)
-        
-        # Check for done/termination commands
+        # Check for done commands
         user_lower = user_input.lower().strip()
         if user_lower in ['done', 'n', 'no', 'nothing', "that's all", "thats all"]:
             logger.info("User ended Q&A - generating recommendation")
-            qna_summary = await self._get_qna_summary()
-            await self._generate_recommendation(ctx, cv_text, job_description, qna_summary)
+            conv_state.state = "complete"
+            qna_summary = await self._get_qna_summary(conv_state)
+            await self._generate_recommendation(ctx, conv_state, qna_summary)
             return
         
-        # Add user input to conversation history
-        self._conversation_history.append(f"User: {user_input}")
+        # Add user input to history
+        conv_state.qna_history.append(f"User: {user_input}")
         
-        # Ensure we have a Q&A thread
-        if self._qna_thread is None:
-            self._qna_thread = self._qna_agent.get_new_thread()
+        # Ensure thread exists
+        if conv_state.qna_thread is None:
+            conv_state.qna_thread = self._qna_agent.get_new_thread()
         
-        # Determine prompt based on context
-        user_exchanges = len([h for h in self._conversation_history if h.startswith("User:")])
-        
-        # Gap targeting every 5th exchange
-        should_target_gap = (user_exchanges > 0 and user_exchanges % 5 == 0 and self._gaps)
+        # Determine if we should target a specific gap
+        user_exchanges = len([h for h in conv_state.qna_history if h.startswith("User:")])
+        should_target_gap = (user_exchanges > 0 and user_exchanges % 5 == 0 and conv_state.gaps)
         
         if should_target_gap:
-            priority_gaps = [gap for gap in self._gaps if any(keyword in gap.lower() 
+            priority_gaps = [gap for gap in conv_state.gaps if any(keyword in gap.lower() 
                 for keyword in ['networking', 'communication', 'teamwork', 'authorization', 'location'])]
-            target_gap = priority_gaps[0] if priority_gaps else self._gaps[0]
+            target_gap = priority_gaps[0] if priority_gaps else conv_state.gaps[0]
             
             qna_prompt = f"""The user just responded: "{user_input}"
 
 Now I'd like you to acknowledge their response briefly, then naturally steer the conversation to explore their experience with: {target_gap}
 
 Don't directly mention 'gaps' - just ask about related experiences. Be conversational."""
-        
-        elif in_wrap_up:
-            qna_prompt = f"""User asked: "{user_input}"
-
-Please answer their question thoroughly, then ask if there's anything else they'd like to explore. Make it clear they can say 'done' or 'n' when ready for the final recommendation."""
-        
         else:
             qna_prompt = f"User response: {user_input}"
         
-        # Get Q&A agent response
-        result = await self._qna_agent.run(qna_prompt, thread=self._qna_thread)
+        # Get Q&A response
+        logger.info("[Q&A AGENT] Generating follow-up question...")
+        result = await self._qna_agent.run(qna_prompt, thread=conv_state.qna_thread)
         response = result.messages[-1].text
-        self._conversation_history.append(f"Advisor: {response}")
+        conv_state.qna_history.append(f"Advisor: {response}")
         
-        # Run validation to update gaps
+        # Update gaps via validation
+        logger.info("[VALIDATION AGENT] Checking gap status...")
         _, updated_gaps = await check_validation_status(
-            self._validation_agent, 
-            self._gaps, 
-            self._conversation_history
+            self._validation_agent,
+            conv_state.gaps,
+            conv_state.qna_history
         )
-        self._gaps = updated_gaps
+        conv_state.gaps = updated_gaps
         
-        # Check if this is a wrap-up question
+        # Check for wrap-up question
         if detect_termination_question(response):
             response += "\n\n*(Say 'done' or 'n' when you're ready for your recommendation)*"
         
-        await emit_response(ctx, response, self.id)
+        # Add Q&A agent indicator
+        await emit_response(ctx, f"**[Q&A Agent]** {response}", self.id)
     
-    async def _get_qna_summary(self) -> str:
+    async def _get_qna_summary(self, conv_state: ConversationState) -> str:
         """Get final summary from Q&A agent."""
-        if self._qna_thread is None:
+        if conv_state.qna_thread is None:
             return "No Q&A conversation occurred."
         
         summary_prompt = "Please provide your final assessment based on our conversation."
-        result = await self._qna_agent.run(summary_prompt, thread=self._qna_thread)
+        result = await self._qna_agent.run(summary_prompt, thread=conv_state.qna_thread)
         return result.messages[-1].text
     
     async def _generate_recommendation(
         self,
         ctx: WorkflowContext,
-        cv_text: str,
-        job_description: str,
+        conv_state: ConversationState,
         qna_insights: str
     ) -> None:
         """Generate final recommendation."""
         
-        logger.info("Generating final recommendation...")
+        logger.info("[RECOMMENDER] Generating final recommendation...")
         
         recommendation_prompt = f"""**CV:**
-{cv_text}
+{conv_state.cv_text}
 
 **JOB DESCRIPTION:**
-{job_description}
+{conv_state.job_text}
 
 **ANALYSIS:**
-{self._analysis_text}
+{conv_state.analysis_text}
 
 **Q&A INSIGHTS:**
 {qna_insights if qna_insights else "No Q&A conversation - high initial match score."}
@@ -620,7 +686,97 @@ Please provide your recommendation."""
         result = await self._recommender.run(recommendation_prompt)
         recommendation = result.messages[-1].text
         
-        await emit_response(ctx, recommendation, self.id)
+        # Add agent indicator and follow-up prompt after recommendation
+        recommendation_with_header = f"**[Recommendation Agent]**\n\n{recommendation}"
+        follow_up = (
+            "\n\n---\n\n"
+            "🔄 **What's next?**\n\n"
+            "Would you like to:\n"
+            "• Try a **new job description** (just paste it)\n"
+            "• Update your **CV** and try again\n"
+            "• Type **'reset'** to start completely fresh"
+        )
+        
+        await emit_response(ctx, recommendation_with_header + follow_up, self.id)
+    
+    async def _handle_post_recommendation(
+        self,
+        ctx: WorkflowContext,
+        conv_state: ConversationState,
+        user_input: str,
+        conversation_id: str
+    ) -> None:
+        """Handle user input after recommendation - route through Brain for natural conversation."""
+        
+        user_lower = user_input.lower().strip()
+        
+        # Check if user wants to analyze with existing CV (they just provided a new job)
+        analyze_phrases = ['use my old cv', 'use my cv', 'use previous cv', 'use my previous', 
+                          'yes analyze', 'yes please', 'go ahead', 'analyze', 'analyse',
+                          'yes', 'do it', 'proceed', 'continue', 'ready']
+        
+        if any(phrase in user_lower for phrase in analyze_phrases):
+            # User wants to analyze - check if we have CV and job
+            if conv_state.cv_text and conv_state.job_text:
+                logger.info("User confirmed analysis with existing CV - running pipeline")
+                # Clear previous analysis state but keep CV and job
+                conv_state.analysis_text = None
+                conv_state.gaps = []
+                conv_state.qna_history = []
+                conv_state.qna_thread = None
+                conv_state.state = "analyzing"
+                await self._run_analysis(ctx, conv_state, conversation_id)
+                return
+            elif conv_state.cv_text and not conv_state.job_text:
+                await emit_response(ctx, "I have your CV! Please paste the job description you'd like me to analyze.", self.id)
+                conv_state.state = "collecting"
+                return
+            else:
+                await emit_response(ctx, "I don't have your CV saved. Please paste your CV first.", self.id)
+                conv_state.state = "collecting"
+                return
+        
+        # Prepare context for Brain about current state
+        context_prefix = "[POST_RECOMMENDATION] User has received their recommendation. "
+        
+        # Check if this looks like a new CV
+        if len(user_input) > 500 and any(word in user_input.lower() for word in ['experience', 'education', 'skills', 'worked at', 'degree']):
+            context_prefix += "User appears to be sharing a new/updated CV.\n\n"
+            
+        # Check if this looks like a new job description
+        elif len(user_input) > 150 and any(word in user_input.lower() for word in ['requirements', 'responsibilities', 'qualifications', 'we are looking', 'you will']):
+            context_prefix += "User appears to be sharing a new job description. DO NOT analyze it yourself - just acknowledge receipt and use the [JOB_RECEIVED] marker.\n\n"
+        
+        # Send to Brain with context
+        brain_prompt = context_prefix + user_input
+        result = await self._brain.run(brain_prompt, thread=conv_state.brain_thread)
+        response = result.messages[-1].text
+        
+        # Check for markers indicating new documents
+        if "[CV_RECEIVED]" in response:
+            # User provided new CV - reset for new analysis
+            conv_state.cv_text = user_input
+            conv_state.job_text = None
+            conv_state.analysis_text = None
+            conv_state.gaps = []
+            conv_state.qna_history = []
+            conv_state.qna_thread = None
+            conv_state.state = "collecting"
+            logger.info(f"New CV received post-recommendation ({len(user_input)} chars)")
+            response = response.replace("[CV_RECEIVED]", "").strip()
+            
+        elif "[JOB_RECEIVED]" in response:
+            # User provided new job - keep CV, go to confirmation
+            conv_state.job_text = user_input
+            conv_state.analysis_text = None
+            conv_state.gaps = []
+            conv_state.qna_history = []
+            conv_state.qna_thread = None
+            conv_state.state = "waiting_confirmation"
+            logger.info(f"New job description received post-recommendation ({len(user_input)} chars)")
+            response = response.replace("[JOB_RECEIVED]", "").strip()
+        
+        await emit_response(ctx, response, self.id)
 
 
 # ============================================================================
@@ -649,7 +805,7 @@ def create_agents(config: Config) -> Dict[str, ChatAgent]:
             instructions=agent_config["instructions"]
         )
     
-    logger.info(f"Created {len(agents)} agents")
+    logger.info(f"Created {len(agents)} agents: {list(agents.keys())}")
     return agents
 
 
@@ -658,27 +814,28 @@ def create_agents(config: Config) -> Dict[str, ChatAgent]:
 # ============================================================================
 
 def build_cv_workflow_agent():
-    """Build the state-based CV analysis workflow as an agent."""
+    """Build the Brain-based CV analysis workflow as an agent."""
     config = Config()
     agents = create_agents(config)
     
     workflow = (
         WorkflowBuilder()
         .register_executor(
-            lambda: StateBasedWorkflowExecutor(
+            lambda: BrainBasedWorkflowExecutor(
+                brain_agent=agents["brain"],
                 analyzer_agent=agents["analyzer"],
                 qna_agent=agents["qna"],
                 validation_agent=agents["validation"],
                 recommender_agent=agents["recommendation"],
             ),
-            name="state-based-workflow"
+            name="brain-workflow"
         )
-        .set_start_executor("state-based-workflow")
+        .set_start_executor("brain-workflow")
         .build()
         .as_agent()
     )
     
-    logger.info("State-based CV workflow agent built successfully")
+    logger.info("Brain-based CV workflow agent built successfully")
     return workflow
 
 
@@ -688,16 +845,15 @@ def build_cv_workflow_agent():
 
 async def test_workflow():
     """Test the workflow locally."""
-    from agent_framework import WorkflowAgent
-    
     agent = build_cv_workflow_agent()
     
     print("\n" + "=" * 60)
-    print(" State-Based CV Workflow - Local Test")
+    print(" Brain-Based CV Workflow - Local Test")
     print("=" * 60)
     print("\nWorkflow agent built successfully!")
-    print("This version uses conversation history for state tracking.")
-    print("Compatible with Teams, Foundry Playground, and all UIs.")
+    print("This version uses Brain agent for natural conversation")
+    print("and in-memory state persistence per conversation_id.")
+    print("\nCompatible with: Teams, Foundry Playground, and all UIs.")
     print("\nTo deploy: azd deploy")
     print("=" * 60 + "\n")
 
