@@ -1,14 +1,19 @@
 """
 Simple DevUI Launcher for Application Buddy
-Uses your existing workflow with zero code duplication.
+Uses the TeamsOrchestrator HITL workflow.
 """
 import os
+import sys
 from dotenv import load_dotenv
+
+# Add TeamsOrchestrator to path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src', 'TeamsOrchestrator'))
+
 from agent_framework.devui import serve
-from workflows.main_workflow_v2 import devui_workflow
+from workflow import build_cv_workflow_agent
 
 def main():
-    """Launch DevUI - dead simple version!"""
+    """Launch DevUI - simple version!"""
     print("🚀 Application Buddy DevUI")
     
     load_dotenv()
@@ -16,11 +21,11 @@ def main():
         print("❌ Set up your .env file first")
         return
     
-    print("✅ Loading your workflow...")
-    workflow = devui_workflow()
+    print("✅ Building HITL workflow agent...")
+    workflow_agent = build_cv_workflow_agent()
     
     print("🌐 Starting DevUI at http://localhost:8080")
-    serve(entities=[workflow], port=8080, auto_open=True)
+    serve(entities=[workflow_agent], port=8080, auto_open=True)
 
 if __name__ == "__main__":
     main()

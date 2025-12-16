@@ -1,0 +1,22 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/microsoft/AgentSchema/refs/heads/main/schemas/v1.0/ContainerAgent.yaml
+
+kind: hosted
+name: TeamsOrchestrator
+description: |
+    CV Analysis Teams Orchestrator using WorkflowBuilder workflow with conditional Q&A routing.  Analyzes candidate CVs against job descriptions with interactive validation and gap targeting.
+metadata:
+    authors:
+        - Clara
+    tags:
+        - Azure AI AgentServer
+        - Microsoft Agent Framework
+        - Workflows
+        - CV Analysis
+protocols:
+    - protocol: responses
+      version: ""
+environment_variables:
+    - name: AZURE_OPENAI_ENDPOINT
+      value: ${AZURE_OPENAI_ENDPOINT}
+    - name: AZURE_OPENAI_CHAT_DEPLOYMENT_NAME
+      value: gpt-4o
