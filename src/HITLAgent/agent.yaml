@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/microsoft/AgentSchema/refs/heads/main/schemas/v1.0/ContainerAgent.yaml
 
 kind: hosted
-name: TeamsOrchestrator
+name: HITLAgent
 description: |
     CV Analysis Teams Orchestrator using WorkflowBuilder workflow with conditional Q&A routing.  Analyzes candidate CVs against job descriptions with interactive validation and gap targeting.
 metadata:
