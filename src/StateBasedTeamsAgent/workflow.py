@@ -376,6 +376,33 @@ class BrainBasedWorkflowExecutor(Executor):
         if user_messages:
             user_input = extract_message_text(user_messages[-1])
         
+        # Check for debug command - detailed info for troubleshooting
+        if user_input.lower().strip() == 'debug':
+            seen_ids = getattr(get_conversation_id_from_context, '_seen_ids', set())
+            debug_msg = f"""🔧 **Debug Info**
+
+**Session:**
+- Mode: {session_mode}
+- Conv ID: `{conversation_id}`
+- Is global: {is_global_session}
+
+**State:**
+- Current: `{conv_state.state}`
+- CV stored: {len(conv_state.cv_text) if conv_state.cv_text else 0} chars
+- Job stored: {len(conv_state.job_text) if conv_state.job_text else 0} chars
+- Score: {conv_state.score}
+- Gaps: {len(conv_state.gaps)}
+- Q&A history: {len(conv_state.qna_history)} turns
+
+**Memory:**
+- Total sessions: {len(_conversation_store)}
+- Seen conv IDs: {len(seen_ids)}
+
+**Diagnosis:**
+{"✅ Plan A: Personal sessions via request_context" if not is_global_session else "⚠️ Plan B: Global fallback (single user)"}"""
+            await emit_response(ctx, debug_msg, self.id)
+            return
+        
         # Check for status command - tells user which mode
         if user_input.lower().strip() == 'status':
             status_msg = f"""**Session Status**
@@ -483,55 +510,25 @@ class BrainBasedWorkflowExecutor(Executor):
         user_input: str,
         conversation_id: str
     ) -> None:
-        """Handle user confirmation to start analysis."""
+        """Handle user confirmation to start analysis - Brain decides based on user intent."""
         
-        user_lower = user_input.lower().strip()
+        # Let the Brain agent decide if we should start analysis
+        # Brain will output [START_ANALYSIS] if user wants to proceed
+        result = await self._brain.run(user_input, thread=conv_state.brain_thread)
+        response = result.messages[-1].text
         
-        # Check for NEGATIVE responses first (takes priority)
-        negative_patterns = ['no', 'wait', 'hold on', 'stop', 'different', 'another', 
-                            'not yet', 'cancel', 'nevermind', 'never mind', 'actually']
-        
-        if any(word in user_lower for word in negative_patterns):
-            # User wants to do something else - route through Brain
-            logger.info("User declined analysis or wants to change something")
-            result = await self._brain.run(user_input, thread=conv_state.brain_thread)
-            response = result.messages[-1].text
-            
-            # Check if they're providing a different job or CV
-            if "[CV_RECEIVED]" in response:
-                conv_state.cv_text = user_input
-                conv_state.job_text = None  # Clear job since they're starting over
-                conv_state.state = "collecting"
-                response = response.replace("[CV_RECEIVED]", "").strip()
-                logger.info(f"New CV received ({len(user_input)} chars)")
-            
-            if "[JOB_RECEIVED]" in response:
-                conv_state.job_text = user_input
-                response = response.replace("[JOB_RECEIVED]", "").strip()
-                logger.info(f"New job description received ({len(user_input)} chars)")
-            
+        # Check if Brain decided to trigger analysis
+        if "[START_ANALYSIS]" in response:
+            # Remove marker from response
+            response = response.replace("[START_ANALYSIS]", "").strip()
             await emit_response(ctx, response, self.id)
-            return
-        
-        # Check for affirmative responses - must be short and direct
-        affirmative_exact = ['yes', 'yeah', 'yep', 'sure', 'ok', 'okay', 'go', 'y', 
-                             'yes please', 'go ahead', 'do it', 'let\'s go', 'ready', 
-                             'proceed', 'continue', 'analyze', 'analyse', 'start']
-        
-        # For short responses, check if it's primarily affirmative
-        is_short_affirmative = len(user_lower.split()) <= 5 and any(word in user_lower for word in affirmative_exact)
-        
-        if is_short_affirmative:
-            # User confirmed - proceed to analysis
+            
+            # Proceed to analysis
             conv_state.state = "analyzing"
-            logger.info("User confirmed - proceeding to analysis")
+            logger.info("Brain triggered analysis via [START_ANALYSIS] marker")
             await self._run_analysis(ctx, conv_state, conversation_id)
         else:
-            # User said something else - route through Brain for natural conversation
-            result = await self._brain.run(user_input, thread=conv_state.brain_thread)
-            response = result.messages[-1].text
-            
-            # Check if they're providing a different job or CV
+            # Brain decided not to start analysis - check for other markers
             if "[CV_RECEIVED]" in response:
                 conv_state.cv_text = user_input
                 response = response.replace("[CV_RECEIVED]", "").strip()
@@ -552,63 +549,80 @@ class BrainBasedWorkflowExecutor(Executor):
     ) -> None:
         """Run CV analysis and transition to Q&A or recommendation."""
         
-        logger.info("[ANALYZER] Running CV analysis...")
+        logger.info("[ANALYZER] Starting CV analysis...")
         
-        # Status message
-        await emit_response(ctx, "🔍 **[Analyzer Agent]** Analyzing your profile against the job requirements...\n\n*This may take a moment.*", self.id)
-        
-        # Run analyzer
-        analysis_prompt = f"""**CANDIDATE CV:**
-{conv_state.cv_text}
-
-**JOB DESCRIPTION:**
-{conv_state.job_text}"""
-        
-        result = await self._analyzer.run(analysis_prompt)
-        analysis_text = result.messages[-1].text
-        conv_state.analysis_text = analysis_text
-        
-        # Determine if Q&A is needed
-        needs_qna, score, gaps = should_run_qna(analysis_text)
-        conv_state.gaps = gaps
-        conv_state.score = score
-        
-        logger.info(f"Analysis complete. Score: {score}, Needs Q&A: {needs_qna}, Gaps: {len(gaps)}")
-        
-        if needs_qna:
-            # Transition to Q&A
-            conv_state.state = "qna"
-            conv_state.qna_thread = self._qna_agent.get_new_thread()
-            conv_state.qna_history = []
+        try:
+            # Status message - keep it short
+            await emit_response(ctx, "🔍 Analyzing your profile...", self.id)
             
-            # Get first Q&A question
-            qna_prompt = f"""**ANALYSIS:**
-{analysis_text}
-
-**CV:**
+            # Run analyzer
+            analysis_prompt = f"""**CANDIDATE CV:**
 {conv_state.cv_text}
 
 **JOB DESCRIPTION:**
 {conv_state.job_text}"""
             
-            qna_result = await self._qna_agent.run(qna_prompt, thread=conv_state.qna_thread)
-            first_question = qna_result.messages[-1].text
-            conv_state.qna_history.append(f"Advisor: {first_question}")
+            logger.info(f"[ANALYZER] Sending prompt ({len(analysis_prompt)} chars)")
+            result = await self._analyzer.run(analysis_prompt)
+            analysis_text = result.messages[-1].text
+            conv_state.analysis_text = analysis_text
+            logger.info(f"[ANALYZER] Got response ({len(analysis_text)} chars)")
             
-            response = (
-                f"✅ **[Analyzer Agent]** Analysis complete!\n\n"
-                f"I found {len(gaps)} areas to explore.\n\n"
-                f"---\n\n"
-                f"**[Q&A Agent]** {first_question}\n\n"
-                f"*(Type 'done' anytime to get your final recommendation)*"
-            )
-            await emit_response(ctx, response, self.id)
+            # Determine if Q&A is needed
+            needs_qna, score, gaps = should_run_qna(analysis_text)
+            conv_state.gaps = gaps
+            conv_state.score = score
+            
+            logger.info(f"[ANALYZER] Score: {score}, Needs Q&A: {needs_qna}, Gaps: {len(gaps)}")
         
-        else:
-            # High score - skip Q&A
-            logger.info("High score - skipping Q&A, generating recommendation...")
-            conv_state.state = "complete"
-            await self._generate_recommendation(ctx, conv_state, "")
+        except Exception as e:
+            logger.error(f"[ANALYZER] Error during analysis: {e}", exc_info=True)
+            await emit_response(ctx, f"⚠️ Analysis error. Please type 'reset' and try again.", self.id)
+            conv_state.state = "collecting"
+            return
+        
+        try:
+            # Send analysis summary
+            summary = f"✅ **Analysis Complete!**\n\n📊 Score: **{score}%**\n🔍 Areas to discuss: **{len(gaps)}**"
+            await emit_response(ctx, summary, self.id)
+            
+            if needs_qna:
+                # Transition to Q&A
+                conv_state.state = "qna"
+                conv_state.qna_thread = self._qna_agent.get_new_thread()
+                conv_state.qna_history = []
+                
+                logger.info("[Q&A] Starting Q&A phase...")
+                
+                try:
+                    # Get first Q&A question - use shorter prompt
+                    qna_prompt = f"""ANALYSIS GAPS: {', '.join(gaps[:5])}
+
+Start a friendly conversation to learn more about the candidate's relevant experience. Ask about ONE gap area."""
+                    
+                    qna_result = await self._qna_agent.run(qna_prompt, thread=conv_state.qna_thread)
+                    first_question = qna_result.messages[-1].text
+                    conv_state.qna_history.append(f"Advisor: {first_question}")
+                    
+                    # Send Q&A intro - keep it concise
+                    await emit_response(ctx, f"💬 {first_question}\n\n*(Type 'done' for your recommendation)*", self.id)
+                    
+                except Exception as e:
+                    logger.error(f"[Q&A] Error starting Q&A: {e}", exc_info=True)
+                    # Fall back to recommendation if Q&A fails
+                    conv_state.state = "complete"
+                    await self._generate_recommendation(ctx, conv_state, "")
+            
+            else:
+                # High score - skip Q&A
+                logger.info("High score - skipping Q&A, generating recommendation...")
+                conv_state.state = "complete"
+                await self._generate_recommendation(ctx, conv_state, "")
+                
+        except Exception as e:
+            logger.error(f"Error during analysis: {e}")
+            await emit_response(ctx, f"⚠️ Sorry, I encountered an error during analysis. Please type 'reset' and try again.\n\nError: {str(e)[:200]}", self.id)
+            conv_state.state = "collecting"
     
     async def _handle_qna(
         self,
