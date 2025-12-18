@@ -535,10 +535,12 @@ class BrainBasedWorkflowExecutor(Executor):
             
             # Check if Brain decided to trigger analysis
             if "[START_ANALYSIS]" in response:
-                # Remove marker - don't send Brain's response, go straight to analysis
                 logger.info("[CONFIRMATION] Brain triggered [START_ANALYSIS]")
                 
-                # Proceed to analysis (it will send its own first message)
+                # SEND IMMEDIATE RESPONSE before slow analysis work (prevents timeout)
+                await emit_response(ctx, "🔍 **Starting analysis...**\n\n*Analyzing your profile against the job requirements. This may take a moment.*", self.id)
+                
+                # Proceed to analysis
                 conv_state.state = "analyzing"
                 await self._run_analysis(ctx, conv_state, conversation_id)
             else:
@@ -599,9 +601,6 @@ class BrainBasedWorkflowExecutor(Executor):
         
         try:
             if needs_qna:
-                # Analyzer sends its message (no score shown to user)
-                await emit_response(ctx, f"✅ **Analysis Complete!** Areas to explore: **{len(gaps)}**", self.id)
-                
                 # Transition to Q&A
                 conv_state.state = "qna"
                 conv_state.qna_thread = self._qna_agent.get_new_thread()
@@ -610,7 +609,7 @@ class BrainBasedWorkflowExecutor(Executor):
                 logger.info("[Q&A] Starting Q&A phase...")
                 
                 try:
-                    # Q&A agent generates and sends its first question
+                    # Q&A agent generates first question
                     qna_prompt = f"""ANALYSIS GAPS: {', '.join(gaps[:5])}
 
 Start a friendly conversation to learn more about the candidate's relevant experience. Ask about ONE gap area."""
@@ -619,8 +618,14 @@ Start a friendly conversation to learn more about the candidate's relevant exper
                     first_question = qna_result.messages[-1].text
                     conv_state.qna_history.append(f"Advisor: {first_question}")
                     
-                    # Q&A sends its own message
-                    await emit_response(ctx, f"💬 {first_question}\n\n*(Type 'done' anytime for your recommendation)*", self.id)
+                    # ONE COMBINED MESSAGE - avoids 400 error from multiple emit_response calls
+                    combined_response = (
+                        f"✅ **Analysis Complete!** Score: **{score}%** | Areas to explore: **{len(gaps)}**\n\n"
+                        f"---\n\n"
+                        f"💬 **[Q&A Agent]** {first_question}\n\n"
+                        f"*(Type 'done' anytime for your recommendation)*"
+                    )
+                    await emit_response(ctx, combined_response, self.id)
                     
                 except Exception as e:
                     logger.error(f"[Q&A] Error starting Q&A: {e}", exc_info=True)
@@ -632,7 +637,6 @@ Start a friendly conversation to learn more about the candidate's relevant exper
                 # High score - skip Q&A, go straight to recommendation
                 logger.info("High score - skipping Q&A, generating recommendation...")
                 conv_state.state = "complete"
-                # Analyzer sends its message
                 await emit_response(ctx, f"✅ **Analysis Complete!** Great match! Generating your recommendation...", self.id)
                 await self._generate_recommendation(ctx, conv_state, "")
                 
@@ -689,7 +693,17 @@ Don't mention 'gaps' - just ask about related experiences. Be conversational and
         response = result.messages[-1].text
         conv_state.qna_history.append(f"Advisor: {response}")
         
-        # Validation agent updates gaps and decides readiness
+        # SEND RESPONSE IMMEDIATELY with current gap count (prevents timeout)
+        # Use current state before validation runs
+        if conv_state.validation_ready:
+            status_msg = "\n\n✅ *All set! Say 'done' when you're ready for your recommendation.*"
+        else:
+            remaining = len(conv_state.gaps)
+            status_msg = f"\n\n*({remaining} area(s) left to explore)*"
+        
+        await emit_response(ctx, f"**[Q&A Agent]** {response}{status_msg}", self.id)
+        
+        # NOW run validation (updates state for next turn, user already got response)
         logger.info("[VALIDATION] Checking status...")
         validation_ready, updated_gaps = await check_validation_status(
             self._validation_agent,
@@ -698,15 +712,7 @@ Don't mention 'gaps' - just ask about related experiences. Be conversational and
         )
         conv_state.gaps = updated_gaps
         conv_state.validation_ready = validation_ready
-        
-        # Show status based on validation
-        if conv_state.validation_ready:
-            response += "\n\n✅ *All set! Say 'done' when you're ready for your recommendation.*"
-        else:
-            remaining = len(conv_state.gaps)
-            response += f"\n\n*({remaining} area(s) left to explore)*"
-        
-        await emit_response(ctx, f"**[Q&A Agent]** {response}", self.id)
+        logger.info(f"[VALIDATION] Ready: {validation_ready}, Remaining gaps: {len(updated_gaps)}")
     
     async def _get_qna_summary(self, conv_state: ConversationState) -> str:
         """Get final summary from Q&A agent."""
