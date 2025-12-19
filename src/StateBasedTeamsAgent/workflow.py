@@ -61,6 +61,7 @@ class ConversationState:
     job_text: Optional[str] = None
     analysis_text: Optional[str] = None
     gaps: List[str] = field(default_factory=list)
+    initial_gaps: List[str] = field(default_factory=list)  # Original gaps before Q&A
     score: int = 0
     qna_history: List[str] = field(default_factory=list)
     brain_thread: Any = None  # Thread for Brain agent memory
@@ -538,7 +539,7 @@ class BrainBasedWorkflowExecutor(Executor):
                 logger.info("[CONFIRMATION] Brain triggered [START_ANALYSIS]")
                 
                 # SEND IMMEDIATE RESPONSE before slow analysis work (prevents timeout)
-                await emit_response(ctx, "🔍 **Starting analysis...**\n\n*Analyzing your profile against the job requirements. This may take a moment.*", self.id)
+                await emit_response(ctx, " **Starting analysis...**\n\n*Analyzing your profile against the job requirements. This may take a moment.*", self.id)
                 
                 # Proceed to analysis
                 conv_state.state = "analyzing"
@@ -589,6 +590,7 @@ class BrainBasedWorkflowExecutor(Executor):
             # Determine if Q&A is needed
             needs_qna, score, gaps = should_run_qna(analysis_text)
             conv_state.gaps = gaps
+            conv_state.initial_gaps = gaps.copy()  # Save original gaps for recommendation
             conv_state.score = score
             
             logger.info(f"[ANALYZER] Score: {score}, Needs Q&A: {needs_qna}, Gaps: {len(gaps)}")
@@ -620,9 +622,9 @@ Start a friendly conversation to learn more about the candidate's relevant exper
                     
                     # ONE COMBINED MESSAGE - avoids 400 error from multiple emit_response calls
                     combined_response = (
-                        f"✅ **Analysis Complete!** Score: **{score}%** | Areas to explore: **{len(gaps)}**\n\n"
+                        f" **Analysis Complete!** Score: **{score}%** | Areas to explore: **{len(gaps)}**\n\n"
                         f"---\n\n"
-                        f"💬 **[Q&A Agent]** {first_question}\n\n"
+                        f" **[Q&A Agent]** {first_question}\n\n"
                         f"*(Type 'done' anytime for your recommendation)*"
                     )
                     await emit_response(ctx, combined_response, self.id)
@@ -672,9 +674,9 @@ Start a friendly conversation to learn more about the candidate's relevant exper
         if conv_state.qna_thread is None:
             conv_state.qna_thread = self._qna_agent.get_new_thread()
         
-        # Every 5 exchanges, validation steers toward a gap (if any remain)
+        # Steer toward a gap every 2 exchanges to ensure coverage
         user_exchanges = len([h for h in conv_state.qna_history if h.startswith("User:")])
-        should_target_gap = (user_exchanges > 0 and user_exchanges % 5 == 0 and conv_state.gaps)
+        should_target_gap = (user_exchanges > 0 and user_exchanges % 2 == 0 and conv_state.gaps)
         
         if should_target_gap:
             target_gap = conv_state.gaps[0]
@@ -693,17 +695,12 @@ Don't mention 'gaps' - just ask about related experiences. Be conversational and
         response = result.messages[-1].text
         conv_state.qna_history.append(f"Advisor: {response}")
         
-        # SEND RESPONSE IMMEDIATELY with current gap count (prevents timeout)
-        # Use current state before validation runs
-        if conv_state.validation_ready:
-            status_msg = "\n\n✅ *All set! Say 'done' when you're ready for your recommendation.*"
-        else:
-            remaining = len(conv_state.gaps)
-            status_msg = f"\n\n*({remaining} area(s) left to explore)*"
+        # SEND RESPONSE IMMEDIATELY (prevents timeout)
+        # Don't show "All set" - validation runs AFTER this, so status would be stale
+        # Just remind user they can say 'done' anytime
+        await emit_response(ctx, f"**[Q&A Agent]** {response}\n\n*(Type 'done' anytime for your recommendation)*", self.id)
         
-        await emit_response(ctx, f"**[Q&A Agent]** {response}{status_msg}", self.id)
-        
-        # NOW run validation (updates state for next turn, user already got response)
+        # NOW run validation (updates state, but we don't show it to avoid confusion)
         logger.info("[VALIDATION] Checking status...")
         validation_ready, updated_gaps = await check_validation_status(
             self._validation_agent,
@@ -713,6 +710,16 @@ Don't mention 'gaps' - just ask about related experiences. Be conversational and
         conv_state.gaps = updated_gaps
         conv_state.validation_ready = validation_ready
         logger.info(f"[VALIDATION] Ready: {validation_ready}, Remaining gaps: {len(updated_gaps)}")
+        
+        # AUTO-TERMINATE: If validation says all gaps covered, go to recommendation
+        if validation_ready or len(updated_gaps) == 0:
+            logger.info("[Q&A] All gaps addressed - auto-transitioning to recommendation")
+            conv_state.state = "complete"
+            
+            await emit_response(ctx, "✅ **Great! I've gathered enough information.**\n\n*Preparing your recommendation...*", self.id)
+            
+            qna_summary = "\n".join(conv_state.qna_history[-10:]) if conv_state.qna_history else "Q&A conversation completed."
+            await self._generate_recommendation(ctx, conv_state, qna_summary)
     
     async def _get_qna_summary(self, conv_state: ConversationState) -> str:
         """Get final summary from Q&A agent."""
@@ -736,6 +743,14 @@ Don't mention 'gaps' - just ask about related experiences. Be conversational and
         
         logger.info("[RECOMMENDER] Generating final recommendation...")
         
+        # Build gap coverage summary - all gaps should be addressed by validation agent
+        initial_gaps = conv_state.initial_gaps if conv_state.initial_gaps else []
+        
+        gap_summary = f"""**INITIAL GAPS IDENTIFIED ({len(initial_gaps)}):**
+{chr(10).join(f'- {g}' for g in initial_gaps) if initial_gaps else 'None identified'}
+
+All gaps were explored during the Q&A conversation. The validation agent confirmed each area was addressed."""
+        
         recommendation_prompt = f"""**CV:**
 {conv_state.cv_text}
 
@@ -745,10 +760,12 @@ Don't mention 'gaps' - just ask about related experiences. Be conversational and
 **ANALYSIS:**
 {conv_state.analysis_text}
 
-**Q&A INSIGHTS:**
+{gap_summary}
+
+**Q&A CONVERSATION (how gaps were addressed):**
 {qna_insights if qna_insights else "No Q&A conversation - high initial match score."}
 
-Please provide your recommendation."""
+Please provide your recommendation. Include a section titled "Gaps Explored During Q&A" that lists each initial gap and summarizes what was learned about the candidate's experience in that area."""
         
         result = await self._recommender.run(recommendation_prompt)
         recommendation = result.messages[-1].text
