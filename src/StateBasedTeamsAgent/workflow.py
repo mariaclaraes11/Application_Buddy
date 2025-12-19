@@ -201,7 +201,7 @@ def should_run_qna(analysis_text: str) -> tuple[bool, int, list]:
                 score = analysis_data.get('preliminary_score', 0)
                 
                 # Add mandatory gaps
-                mandatory = ["Work authorization/location eligibility", "Role understanding and alignment with career goals"]
+                mandatory = ["Work authorization/location eligibility", "Role understanding and alignment with career goals", "Company/culture research and fit"]
                 for m in mandatory:
                     if not any(m.lower() in g.lower() for g in gaps):
                         gaps.append(m)
@@ -674,9 +674,9 @@ Start a friendly conversation to learn more about the candidate's relevant exper
         if conv_state.qna_thread is None:
             conv_state.qna_thread = self._qna_agent.get_new_thread()
         
-        # Steer toward a gap every 2 exchanges to ensure coverage
+        # Steer toward a gap every 4 exchanges to ensure coverage
         user_exchanges = len([h for h in conv_state.qna_history if h.startswith("User:")])
-        should_target_gap = (user_exchanges > 0 and user_exchanges % 2 == 0 and conv_state.gaps)
+        should_target_gap = (user_exchanges > 0 and user_exchanges % 4 == 0 and conv_state.gaps)
         
         if should_target_gap:
             target_gap = conv_state.gaps[0]
