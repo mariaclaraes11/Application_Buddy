@@ -36,6 +36,7 @@ from azure.identity import DefaultAzureCredential
 
 from datetime import datetime, timezone
 import uuid
+import time
 
 from config import Config
 from agent_definitions import AgentDefinitions
@@ -84,6 +85,7 @@ def get_conversation_id_from_context() -> str:
     In Teams: conversation_id SHOULD be stable per chat
     
     We track if we've seen this ID before to detect stability.
+    When we detect Playground mode, we migrate data to global_session.
     """
     from azure.ai.agentserver.core.logger import request_context
     
@@ -99,6 +101,12 @@ def get_conversation_id_from_context() -> str:
         # Track if this conversation_id has been seen before
         if not hasattr(get_conversation_id_from_context, '_seen_ids'):
             get_conversation_id_from_context._seen_ids = set()
+            get_conversation_id_from_context._playground_mode = False
+        
+        # If we already detected Playground mode, always use global
+        if get_conversation_id_from_context._playground_mode:
+            logger.info(f"⚠️ Playground mode active, using global session")
+            return "global_session"
         
         was_seen = conv_id in get_conversation_id_from_context._seen_ids
         get_conversation_id_from_context._seen_ids.add(conv_id)
@@ -110,9 +118,14 @@ def get_conversation_id_from_context() -> str:
         else:
             # First time seeing this ID
             # Check if we have ONLY seen unique IDs (Playground behavior)
-            if len(get_conversation_id_from_context._seen_ids) > 3:
-                # We've seen 3+ different IDs = Playground, use global
-                logger.info(f"⚠️ Unstable conversation_id (Playground mode), using global session")
+            if len(get_conversation_id_from_context._seen_ids) > 2:
+                # We've seen 3+ different IDs = Playground, switch to global
+                logger.info(f"⚠️ Unstable conversation_id (Playground mode), switching to global session")
+                get_conversation_id_from_context._playground_mode = True
+                
+                # MIGRATE data from previous sessions to global_session
+                _migrate_to_global_session()
+                
                 return "global_session"
             else:
                 # Could be first message in Teams, give it a chance
@@ -124,11 +137,63 @@ def get_conversation_id_from_context() -> str:
     return "global_session"
 
 
+def _migrate_to_global_session():
+    """Migrate data from personal sessions to global_session when switching to Playground mode."""
+    global _conversation_store
+    
+    # Find the session with the most data (CV and/or job stored)
+    best_session = None
+    best_score = 0
+    
+    for session_id, state in _conversation_store.items():
+        if session_id == "global_session":
+            continue
+        score = 0
+        if state.cv_text:
+            score += 2
+        if state.job_text:
+            score += 2
+        if state.analysis_text:
+            score += 1
+        if score > best_score:
+            best_score = score
+            best_session = state
+    
+    if best_session and best_score > 0:
+        # Create or update global_session with migrated data
+        if "global_session" not in _conversation_store:
+            _conversation_store["global_session"] = ConversationState()
+        
+        global_state = _conversation_store["global_session"]
+        
+        # Migrate data (only if global doesn't have it)
+        if not global_state.cv_text and best_session.cv_text:
+            global_state.cv_text = best_session.cv_text
+            logger.info(f"📦 Migrated CV ({len(best_session.cv_text)} chars) to global session")
+        if not global_state.job_text and best_session.job_text:
+            global_state.job_text = best_session.job_text
+            logger.info(f"📦 Migrated job ({len(best_session.job_text)} chars) to global session")
+        if not global_state.analysis_text and best_session.analysis_text:
+            global_state.analysis_text = best_session.analysis_text
+            global_state.gaps = best_session.gaps.copy()
+            global_state.score = best_session.score
+            logger.info(f"📦 Migrated analysis to global session")
+        
+        # Copy state if we have data
+        if best_session.cv_text and best_session.job_text:
+            global_state.state = best_session.state
+            logger.info(f"📦 Migrated state '{best_session.state}' to global session")
+
+
 # ============================================================================
 # Helper to emit response to HTTP (not just inter-executor messaging)
 # ============================================================================
 
 MAX_TEAMS_MESSAGE_LENGTH = 2000  # Keep responses concise for Teams
+
+# Track last emit time to prevent rapid-fire messages (causes 400 on Teams)
+_last_emit_time: float = 0.0
+_emit_count: int = 0  # Track how many emits per request
 
 async def emit_response(ctx: WorkflowContext, text: str, executor_id: str = "brain-workflow") -> None:
     """Emit a text response that will appear in the HTTP response.
@@ -136,21 +201,58 @@ async def emit_response(ctx: WorkflowContext, text: str, executor_id: str = "bra
     Unlike ctx.send_message() which sends between executors,
     this emits an AgentRunUpdateEvent that the server converts to HTTP response.
     """
+    global _last_emit_time, _emit_count
+    import asyncio
+    import traceback
+    
+    _emit_count += 1
+    logger.info(f"📤 emit_response #{_emit_count}: {len(text)} chars, preview: {text[:80]}...")
+    
+    # Add delay if last emit was too recent (Teams Bot Framework can't handle rapid messages)
+    time_since_last = time.time() - _last_emit_time
+    if time_since_last < 0.5:  # Less than 500ms since last emit
+        delay = 0.5 - time_since_last
+        logger.info(f"⏳ Rate limiting: waiting {delay:.2f}s before emit")
+        await asyncio.sleep(delay)
+    
     # Truncate if too long for Teams
     original_len = len(text)
     if original_len > MAX_TEAMS_MESSAGE_LENGTH:
         text = text[:MAX_TEAMS_MESSAGE_LENGTH - 50] + "\n\n*(continued...)*"
-        logger.warning(f"Response truncated from {original_len} to {len(text)} chars")
+        logger.warning(f"⚠️ Response truncated from {original_len} to {len(text)} chars")
     
-    update = AgentRunResponseUpdate(
-        contents=[TextContent(text=text)],
-        role=Role.ASSISTANT,
-        author_name=executor_id,
-        response_id=str(uuid.uuid4()),
-        message_id=str(uuid.uuid4()),
-        created_at=datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
-    )
-    await ctx.add_event(AgentRunUpdateEvent(executor_id=executor_id, data=update))
+    try:
+        update = AgentRunResponseUpdate(
+            contents=[TextContent(text=text)],
+            role=Role.ASSISTANT,
+            author_name=executor_id,
+            response_id=str(uuid.uuid4()),
+            message_id=str(uuid.uuid4()),
+            created_at=datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+        )
+        await ctx.add_event(AgentRunUpdateEvent(executor_id=executor_id, data=update))
+        logger.info(f"✅ emit_response #{_emit_count} sent successfully")
+    except Exception as e:
+        error_details = f"❌ **EMIT ERROR #{_emit_count}**\n\nType: `{type(e).__name__}`\nMessage: `{str(e)[:500]}`\n\nTraceback:\n```\n{traceback.format_exc()[:1000]}\n```"
+        logger.error(f"❌ emit_response #{_emit_count} FAILED: {type(e).__name__}: {e}")
+        
+        # Try to send error details to user (if this also fails, we're stuck)
+        try:
+            error_update = AgentRunResponseUpdate(
+                contents=[TextContent(text=error_details)],
+                role=Role.ASSISTANT,
+                author_name=executor_id,
+                response_id=str(uuid.uuid4()),
+                message_id=str(uuid.uuid4()),
+                created_at=datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+            )
+            await ctx.add_event(AgentRunUpdateEvent(executor_id=executor_id, data=error_update))
+        except:
+            pass  # If even error reporting fails, just log it
+        raise
+    
+    # Update last emit time
+    _last_emit_time = time.time()
 
 
 # ============================================================================
@@ -459,8 +561,15 @@ class BrainBasedWorkflowExecutor(Executor):
             await self._handle_qna(ctx, conv_state, user_input, conversation_id)
         
         elif conv_state.state == "complete":
-            # After recommendation, allow user to try another job or update CV
-            await self._handle_post_recommendation(ctx, conv_state, user_input, conversation_id)
+            # Check if we need to generate recommendation first (validation_ready but not yet generated)
+            if conv_state.validation_ready and conv_state.analysis_text and not hasattr(conv_state, '_recommendation_sent'):
+                logger.info("[COMPLETE] Validation ready - generating recommendation now")
+                conv_state._recommendation_sent = True
+                qna_summary = "\n".join(conv_state.qna_history[-10:]) if conv_state.qna_history else "Q&A conversation completed."
+                await self._generate_recommendation(ctx, conv_state, qna_summary)
+            else:
+                # After recommendation, allow user to try another job or update CV
+                await self._handle_post_recommendation(ctx, conv_state, user_input, conversation_id)
     
     async def _handle_collecting(
         self, 
@@ -538,10 +647,10 @@ class BrainBasedWorkflowExecutor(Executor):
             if "[START_ANALYSIS]" in response:
                 logger.info("[CONFIRMATION] Brain triggered [START_ANALYSIS]")
                 
-                # SEND IMMEDIATE RESPONSE before slow analysis work (prevents timeout)
-                await emit_response(ctx, " **Starting analysis...**\n\n*Analyzing your profile against the job requirements. This may take a moment.*", self.id)
+                # NOTE: Don't send "Starting analysis..." - only ONE emit_response per request
+                # to avoid 400 Bad Request from Teams Bot Framework
                 
-                # Proceed to analysis
+                # Proceed to analysis (will emit its own response)
                 conv_state.state = "analyzing"
                 await self._run_analysis(ctx, conv_state, conversation_id)
             else:
@@ -639,7 +748,7 @@ Start a friendly conversation to learn more about the candidate's relevant exper
                 # High score - skip Q&A, go straight to recommendation
                 logger.info("High score - skipping Q&A, generating recommendation...")
                 conv_state.state = "complete"
-                await emit_response(ctx, f"✅ **Analysis Complete!** Great match! Generating your recommendation...", self.id)
+                # NOTE: Don't emit here - let _generate_recommendation be the only response
                 await self._generate_recommendation(ctx, conv_state, "")
                 
         except Exception as e:
@@ -662,7 +771,7 @@ Start a friendly conversation to learn more about the candidate's relevant exper
             logger.info("User typed 'done' - immediate exit to recommendation")
             conv_state.state = "complete"
             
-            await emit_response(ctx, " **Preparing your recommendation...**\n\n*This may take a moment.*", self.id)
+            # NOTE: Don't emit here - let _generate_recommendation be the only response
             
             qna_summary = "\n".join(conv_state.qna_history[-8:]) if conv_state.qna_history else "Brief Q&A conversation."
             await self._generate_recommendation(ctx, conv_state, qna_summary)
@@ -695,12 +804,7 @@ Don't mention 'gaps' - just ask about related experiences. Be conversational and
         response = result.messages[-1].text
         conv_state.qna_history.append(f"Advisor: {response}")
         
-        # SEND RESPONSE IMMEDIATELY (prevents timeout)
-        # Don't show "All set" - validation runs AFTER this, so status would be stale
-        # Just remind user they can say 'done' anytime
-        await emit_response(ctx, f"**[Q&A Agent]** {response}\n\n*(Type 'done' anytime for your recommendation)*", self.id)
-        
-        # NOW run validation (updates state, but we don't show it to avoid confusion)
+        # Run validation BEFORE emitting so we can append wrap-up question if done
         logger.info("[VALIDATION] Checking status...")
         validation_ready, updated_gaps = await check_validation_status(
             self._validation_agent,
@@ -711,15 +815,25 @@ Don't mention 'gaps' - just ask about related experiences. Be conversational and
         conv_state.validation_ready = validation_ready
         logger.info(f"[VALIDATION] Ready: {validation_ready}, Remaining gaps: {len(updated_gaps)}")
         
-        # AUTO-TERMINATE: If validation says all gaps covered, go to recommendation
+        # Build the response message
         if validation_ready or len(updated_gaps) == 0:
-            logger.info("[Q&A] All gaps addressed - auto-transitioning to recommendation")
-            conv_state.state = "complete"
-            
-            await emit_response(ctx, "✅ **Great! I've gathered enough information.**\n\n*Preparing your recommendation...*", self.id)
-            
-            qna_summary = "\n".join(conv_state.qna_history[-10:]) if conv_state.qna_history else "Q&A conversation completed."
-            await self._generate_recommendation(ctx, conv_state, qna_summary)
+            # All gaps addressed - ask if there's anything else before generating recommendation
+            logger.info("[Q&A] All gaps addressed - asking user if anything else")
+            response_msg = (
+                f"**[Q&A Agent]** {response}\n\n"
+                "---\n\n"
+                "✅ **Great progress!** I think we've covered all the key areas.\n\n"
+                "**Is there anything else you'd like to discuss** about this role or your background "
+                "before I give you my recommendation?\n\n"
+                "*(Reply with your question, or type 'done' for my recommendation)*"
+            )
+            # Don't auto-complete yet - wait for user to confirm with 'done' or ask more
+            # This gives them a chance to add anything else
+        else:
+            # Still have gaps to explore - normal Q&A flow
+            response_msg = f"**[Q&A Agent]** {response}\n\n*(Type 'done' anytime for your recommendation)*"
+        
+        await emit_response(ctx, response_msg, self.id)
     
     async def _get_qna_summary(self, conv_state: ConversationState) -> str:
         """Get final summary from Q&A agent."""
@@ -770,25 +884,23 @@ Please provide your recommendation. Include a section titled "Gaps Explored Duri
         result = await self._recommender.run(recommendation_prompt)
         recommendation = result.messages[-1].text
         
-        # Split recommendation into sections and send as separate messages
-        sections = self._split_recommendation_into_sections(recommendation)
-        
-        # Send header first
-        await emit_response(ctx, "**[Recommendation Agent]** Here's my assessment:", self.id)
-        
-        # Send each section as a separate message
-        for section in sections:
-            if section.strip():
-                await emit_response(ctx, section.strip(), self.id)
-        
-        # Send follow-up as final message
+        # Send as ONE message to avoid 400 Bad Request on Teams
+        # Multiple rapid emit_response calls cause Bot Framework to reject the request
         follow_up = (
+            "---\n\n"
             "🔄 **What's next?**\n\n"
             "• Try a **new job description** (just paste it)\n"
             "• Update your **CV** and try again\n"
             "• Type **'reset'** to start completely fresh"
         )
-        await emit_response(ctx, follow_up, self.id)
+        
+        combined = f"**[Recommendation Agent]** Here's my assessment:\n\n{recommendation}\n\n{follow_up}"
+        
+        # Truncate if too long for Teams (4000 char limit for single message)
+        if len(combined) > 3900:
+            combined = combined[:3850] + "\n\n*(message truncated)*"
+        
+        await emit_response(ctx, combined, self.id)
     
     def _split_recommendation_into_sections(self, recommendation: str) -> list:
         """Split recommendation text into logical sections for separate messages."""
