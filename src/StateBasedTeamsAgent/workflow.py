@@ -452,6 +452,41 @@ class BrainBasedWorkflowExecutor(Executor):
     @handler
     async def handle_messages(self, messages: List[ChatMessage], ctx: WorkflowContext) -> None:
         """Main handler - routes based on persisted state."""
+        import traceback
+        
+        # Top-level error wrapper - catches ALL errors and shows them in chat
+        try:
+            await self._handle_messages_inner(messages, ctx)
+        except Exception as e:
+            error_msg = (
+                f"❌ **WORKFLOW ERROR**\n\n"
+                f"**Type:** `{type(e).__name__}`\n"
+                f"**Message:** `{str(e)[:500]}`\n\n"
+                f"**Traceback:**\n```\n{traceback.format_exc()[:1500]}\n```\n\n"
+                f"_Type 'reset' to start over_"
+            )
+            logger.error(f"❌ Top-level error: {type(e).__name__}: {e}")
+            logger.error(traceback.format_exc())
+            
+            try:
+                await emit_response(ctx, error_msg, self.id)
+            except:
+                # If even error reporting fails, try direct emit
+                try:
+                    error_update = AgentRunResponseUpdate(
+                        contents=[TextContent(text=error_msg[:2000])],
+                        role=Role.ASSISTANT,
+                        author_name=self.id,
+                        response_id=str(uuid.uuid4()),
+                        message_id=str(uuid.uuid4()),
+                        created_at=datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+                    )
+                    await ctx.add_event(AgentRunUpdateEvent(executor_id=self.id, data=error_update))
+                except:
+                    pass  # Truly stuck
+    
+    async def _handle_messages_inner(self, messages: List[ChatMessage], ctx: WorkflowContext) -> None:
+        """Inner handler - all the actual logic."""
         
         # Get conversation_id for state persistence
         # DEBUG: Log ALL available context to find stable identifier
@@ -636,6 +671,11 @@ class BrainBasedWorkflowExecutor(Executor):
         """Handle user confirmation to start analysis - Brain decides based on user intent."""
         
         try:
+            # Ensure we have a valid Brain thread (might be None after Playground migration)
+            if conv_state.brain_thread is None:
+                conv_state.brain_thread = self._brain.get_new_thread()
+                logger.info("[CONFIRMATION] Created new Brain thread (was None after migration)")
+            
             # Let the Brain agent decide if we should start analysis
             # Brain will output [START_ANALYSIS] if user wants to proceed
             logger.info(f"[CONFIRMATION] User said: {user_input[:100]}")
@@ -647,12 +687,18 @@ class BrainBasedWorkflowExecutor(Executor):
             if "[START_ANALYSIS]" in response:
                 logger.info("[CONFIRMATION] Brain triggered [START_ANALYSIS]")
                 
-                # NOTE: Don't send "Starting analysis..." - only ONE emit_response per request
-                # to avoid 400 Bad Request from Teams Bot Framework
+                # IMMEDIATELY emit a simple short response FIRST
+                # This tests if the SSE connection works at all
+                await emit_response(ctx, "🔄 **Starting analysis...** Please wait, then send any message to continue.", self.id)
                 
-                # Proceed to analysis (will emit its own response)
+                # Update state AFTER successful emit
                 conv_state.state = "analyzing"
-                await self._run_analysis(ctx, conv_state, conversation_id)
+                
+                # DON'T run full analysis in same request - just update state
+                # User will need to send another message to continue
+                # This avoids timeout issues
+                return
+                
             else:
                 logger.info("[CONFIRMATION] Brain did NOT trigger analysis")
                 # Brain decided not to start analysis - check for other markers
@@ -977,6 +1023,11 @@ Please provide your recommendation. Include a section titled "Gaps Explored Duri
         # Check if this looks like a new job description
         elif len(user_input) > 150 and any(word in user_input.lower() for word in ['requirements', 'responsibilities', 'qualifications', 'we are looking', 'you will']):
             context_prefix += "User appears to be sharing a new job description. DO NOT analyze it yourself - just acknowledge receipt and use the [JOB_RECEIVED] marker.\n\n"
+        
+        # Ensure we have a valid Brain thread (might be None after Playground migration)
+        if conv_state.brain_thread is None:
+            conv_state.brain_thread = self._brain.get_new_thread()
+            logger.info("[POST_RECOMMENDATION] Created new Brain thread (was None)")
         
         # Send to Brain with context
         brain_prompt = context_prefix + user_input
