@@ -325,9 +325,9 @@ When you feel you understand:
 - Whether this role truly aligns with their career goals
 - **TARGET: 5-8 meaningful exchanges, not more**
 
-End naturally by asking: "Before we wrap up, is there anything specific you'd like to explore further about the role or your background? (Just answer 'n' if we've covered everything)"
+End naturally by asking: "Before we wrap up, is there anything specific you'd like to explore further about the role or your background? (Type 'done' if we've covered everything)"
 
-Make it clear that 'n' means they're satisfied, and anything else means they want to continue discussing that topic.
+Make it clear that 'done' means they're satisfied, and anything else means they want to continue discussing that topic.
 
 ### CRITICAL: NEVER PROVIDE JSON DURING CONVERSATION
 **CONVERSATION MODE (default):** Only natural, conversational responses

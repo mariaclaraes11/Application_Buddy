@@ -31,9 +31,13 @@ class Config(BaseSettings):
     
     def model_post_init(self, __context):
         """Set derived values after initialization"""
-        # If azure_ai_foundry_endpoint not set, try AZURE_AI_PROJECT_ENDPOINT
+        # If azure_ai_foundry_endpoint not set, try various endpoint env vars
         if not self.azure_ai_foundry_endpoint:
-            self.azure_ai_foundry_endpoint = os.getenv("AZURE_AI_PROJECT_ENDPOINT") or os.getenv("AZURE_AI_FOUNDRY_ENDPOINT", "")
+            self.azure_ai_foundry_endpoint = (
+                os.getenv("AZURE_AI_PROJECT_ENDPOINT") or 
+                os.getenv("AZURE_AI_FOUNDRY_ENDPOINT") or
+                os.getenv("AZURE_OPENAI_ENDPOINT", "")  # From agent.yaml
+            )
         
         # If model_deployment_name not set, try AZURE_AI_MODEL_DEPLOYMENT_NAME, else default to gpt-4o
         if not self.model_deployment_name:

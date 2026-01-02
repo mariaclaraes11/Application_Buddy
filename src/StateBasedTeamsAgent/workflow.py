@@ -687,16 +687,15 @@ class BrainBasedWorkflowExecutor(Executor):
             if "[START_ANALYSIS]" in response:
                 logger.info("[CONFIRMATION] Brain triggered [START_ANALYSIS]")
                 
-                # IMMEDIATELY emit a simple short response FIRST
-                # This tests if the SSE connection works at all
-                await emit_response(ctx, "🔄 **Starting analysis...** Please wait, then send any message to continue.", self.id)
+                # Make the waiting step feel natural - like a conversation pause
+                await emit_response(
+                    ctx, 
+                    "**Got it!** Looks like a detailed CV and job posting - this analysis might take a little longer. Ready when you are! Just say **'go'** and I'll dive in.", 
+                    self.id
+                )
                 
-                # Update state AFTER successful emit
+                # Update state - next user message will trigger analysis
                 conv_state.state = "analyzing"
-                
-                # DON'T run full analysis in same request - just update state
-                # User will need to send another message to continue
-                # This avoids timeout issues
                 return
                 
             else:
@@ -766,10 +765,21 @@ class BrainBasedWorkflowExecutor(Executor):
                 logger.info("[Q&A] Starting Q&A phase...")
                 
                 try:
-                    # Q&A agent generates first question
-                    qna_prompt = f"""ANALYSIS GAPS: {', '.join(gaps[:5])}
+                    # Q&A agent generates first question - set up CONVERSATIONAL context
+                    qna_prompt = f"""You're having a career chat with someone interested in this role.
 
-Start a friendly conversation to learn more about the candidate's relevant experience. Ask about ONE gap area."""
+BACKGROUND CONTEXT (use naturally, don't interrogate):
+- Their CV matched {score}% of requirements
+- Areas worth exploring through conversation: {', '.join(gaps[:5])}
+
+YOUR APPROACH:
+- Start by getting to know them - what excites them, their background, their goals
+- Let gaps come up NATURALLY through stories and follow-up questions
+- Ask follow-up questions about what they share - dig deeper, be curious
+- Don't jump from topic to topic - explore each area thoroughly before moving on
+- Build on their answers rather than switching to new topics
+
+Start with a warm, open question about them or what drew them to this role."""
                     
                     qna_result = await self._qna_agent.run(qna_prompt, thread=conv_state.qna_thread)
                     first_question = qna_result.messages[-1].text
@@ -863,18 +873,14 @@ Don't mention 'gaps' - just ask about related experiences. Be conversational and
         
         # Build the response message
         if validation_ready or len(updated_gaps) == 0:
-            # All gaps addressed - ask if there's anything else before generating recommendation
-            logger.info("[Q&A] All gaps addressed - asking user if anything else")
+            # All gaps addressed - just show the Q&A response, don't add extra question
+            # The Q&A agent's instructions already handle graceful endings
+            logger.info("[Q&A] All gaps addressed - showing Q&A response only")
             response_msg = (
                 f"**[Q&A Agent]** {response}\n\n"
-                "---\n\n"
-                "✅ **Great progress!** I think we've covered all the key areas.\n\n"
-                "**Is there anything else you'd like to discuss** about this role or your background "
-                "before I give you my recommendation?\n\n"
-                "*(Reply with your question, or type 'done' for my recommendation)*"
+                "*(Type 'done' for your recommendation)*"
             )
-            # Don't auto-complete yet - wait for user to confirm with 'done' or ask more
-            # This gives them a chance to add anything else
+            # Don't auto-complete yet - wait for user to confirm with 'done'
         else:
             # Still have gaps to explore - normal Q&A flow
             response_msg = f"**[Q&A Agent]** {response}\n\n*(Type 'done' anytime for your recommendation)*"
