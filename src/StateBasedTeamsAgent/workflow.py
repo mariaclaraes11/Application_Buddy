@@ -107,7 +107,7 @@ def get_conversation_id_from_context() -> str:
         
         # If we already detected Playground mode, always use global
         if get_conversation_id_from_context._playground_mode:
-            logger.info(f"⚠️ Playground mode active, using global session")
+            logger.info(f" Playground mode active, using global session")
             return "global_session"
         
         was_seen = conv_id in get_conversation_id_from_context._seen_ids
@@ -115,14 +115,14 @@ def get_conversation_id_from_context() -> str:
         
         if was_seen:
             # This ID was seen before = client is reusing conversation (Teams behavior)
-            logger.info(f"✅ Stable conversation_id detected: {conv_id[:20]}...")
+            logger.info(f" Stable conversation_id detected: {conv_id[:20]}...")
             return conv_id
         else:
             # First time seeing this ID
             # Check if we have ONLY seen unique IDs (Playground behavior)
             if len(get_conversation_id_from_context._seen_ids) > 2:
                 # We've seen 3+ different IDs = Playground, switch to global
-                logger.info(f"⚠️ Unstable conversation_id (Playground mode), switching to global session")
+                logger.info(f" Unstable conversation_id (Playground mode), switching to global session")
                 get_conversation_id_from_context._playground_mode = True
                 
                 # MIGRATE data from previous sessions to global_session
@@ -171,20 +171,20 @@ def _migrate_to_global_session():
         # Migrate data (only if global doesn't have it)
         if not global_state.cv_text and best_session.cv_text:
             global_state.cv_text = best_session.cv_text
-            logger.info(f"📦 Migrated CV ({len(best_session.cv_text)} chars) to global session")
+            logger.info(f" Migrated CV ({len(best_session.cv_text)} chars) to global session")
         if not global_state.job_text and best_session.job_text:
             global_state.job_text = best_session.job_text
-            logger.info(f"📦 Migrated job ({len(best_session.job_text)} chars) to global session")
+            logger.info(f" Migrated job ({len(best_session.job_text)} chars) to global session")
         if not global_state.analysis_text and best_session.analysis_text:
             global_state.analysis_text = best_session.analysis_text
             global_state.gaps = best_session.gaps.copy()
             global_state.score = best_session.score
-            logger.info(f"📦 Migrated analysis to global session")
+            logger.info(f" Migrated analysis to global session")
         
         # Copy state if we have data
         if best_session.cv_text and best_session.job_text:
             global_state.state = best_session.state
-            logger.info(f"📦 Migrated state '{best_session.state}' to global session")
+            logger.info(f" Migrated state '{best_session.state}' to global session")
 
 
 # ============================================================================
@@ -214,14 +214,14 @@ async def emit_response(ctx: WorkflowContext, text: str, executor_id: str = "bra
     time_since_last = time.time() - _last_emit_time
     if time_since_last < 0.5:  # Less than 500ms since last emit
         delay = 0.5 - time_since_last
-        logger.info(f"⏳ Rate limiting: waiting {delay:.2f}s before emit")
+        logger.info(f" Rate limiting: waiting {delay:.2f}s before emit")
         await asyncio.sleep(delay)
     
     # Truncate if too long for Teams
     original_len = len(text)
     if original_len > MAX_TEAMS_MESSAGE_LENGTH:
         text = text[:MAX_TEAMS_MESSAGE_LENGTH - 50] + "\n\n*(continued...)*"
-        logger.warning(f"⚠️ Response truncated from {original_len} to {len(text)} chars")
+        logger.warning(f" Response truncated from {original_len} to {len(text)} chars")
     
     try:
         update = AgentRunResponseUpdate(
@@ -235,8 +235,8 @@ async def emit_response(ctx: WorkflowContext, text: str, executor_id: str = "bra
         await ctx.add_event(AgentRunUpdateEvent(executor_id=executor_id, data=update))
         logger.info(f"✅ emit_response #{_emit_count} sent successfully")
     except Exception as e:
-        error_details = f"❌ **EMIT ERROR #{_emit_count}**\n\nType: `{type(e).__name__}`\nMessage: `{str(e)[:500]}`\n\nTraceback:\n```\n{traceback.format_exc()[:1000]}\n```"
-        logger.error(f"❌ emit_response #{_emit_count} FAILED: {type(e).__name__}: {e}")
+        error_details = f" **EMIT ERROR #{_emit_count}**\n\nType: `{type(e).__name__}`\nMessage: `{str(e)[:500]}`\n\nTraceback:\n```\n{traceback.format_exc()[:1000]}\n```"
+        logger.error(f" emit_response #{_emit_count} FAILED: {type(e).__name__}: {e}")
         
         # Try to send error details to user (if this also fails, we're stuck)
         try:
@@ -356,27 +356,20 @@ async def check_validation_status(
     conversation_history: List[str], 
     is_termination_attempt: bool = False
 ) -> tuple[bool, List[str]]:
-    """Check validation status and return readiness and updated gaps."""
+    """Check validation status using intent-based LLM analysis."""
     
     logger.info(f"[VALIDATION] Called with {len(current_gaps)} gaps: {current_gaps}")
     logger.info(f"[VALIDATION] Conversation history length: {len(conversation_history)}")
     
-    recent_conversation = "\n".join(conversation_history[-4:])
+    recent_conversation = "\n".join(conversation_history[-6:])  # More context for better judgment
     
-    if is_termination_attempt:
-        validation_input = f"""Current gaps to track:
-{chr(10).join(current_gaps)}
+    validation_input = f"""Gaps being tracked:
+{chr(10).join(f'- {gap}' for gap in current_gaps)}
 
-Recent conversation exchange:
+Recent conversation:
 {recent_conversation}
 
-User wants to end conversation. Please provide final readiness assessment."""
-    else:
-        validation_input = f"""Current gaps to track:
-{chr(10).join(current_gaps)}
-
-Recent conversation exchange:
-{recent_conversation}"""
+{"User wants to end conversation. Provide final assessment." if is_termination_attempt else "Analyze which gaps were meaningfully discussed."}"""
     
     logger.info(f"[VALIDATION] Input to agent: {validation_input[:300]}...")
     
@@ -385,33 +378,51 @@ Recent conversation exchange:
         validation_response = validation_result.messages[-1].text
         logger.info(f"[VALIDATION] Full response: {validation_response}")
         
-        validation_ready = "READY" in validation_response.upper()
+        # Parse JSON response
+        import json
+        import re
         
-        remaining_gaps = current_gaps.copy()
-        removed_gaps = []
+        # Extract JSON from response (might be wrapped in ```json blocks)
+        json_match = re.search(r'\{[^{}]*"addressed"[^{}]*\}', validation_response, re.DOTALL)
         
-        if "REMOVE:" in validation_response:
-            remove_section = validation_response.split("REMOVE:")[1].split("KEEP:")[0] if "KEEP:" in validation_response else validation_response.split("REMOVE:")[1].split("READINESS:")[0]
-            remove_text = remove_section.strip().lower()
-            logger.info(f"[VALIDATION] Remove section extracted: '{remove_text}'")
-            
-            for gap in current_gaps:
-                gap_lower = gap.lower()
-                # More flexible matching
-                if gap_lower in remove_text or any(word in remove_text for word in gap_lower.split() if len(word) > 4):
-                    remaining_gaps.remove(gap)
-                    removed_gaps.append(gap)
-                    logger.info(f"[VALIDATION]  Removed gap: {gap}")
-        else:
-            logger.info("[VALIDATION]  No REMOVE: section found in response")
+        if json_match:
+            try:
+                result = json.loads(json_match.group())
+                addressed = result.get("addressed", [])
+                validation_ready = result.get("ready", False)
+                reasoning = result.get("reasoning", "")
+                
+                # Remove addressed gaps (case-insensitive matching)
+                remaining_gaps = current_gaps.copy()
+                removed_gaps = []
+                
+                for gap in current_gaps:
+                    gap_lower = gap.lower()
+                    # Check if this gap appears in addressed list
+                    for addr in addressed:
+                        if gap_lower in addr.lower() or addr.lower() in gap_lower:
+                            if gap in remaining_gaps:
+                                remaining_gaps.remove(gap)
+                                removed_gaps.append(gap)
+                                break
+                
+                if removed_gaps:
+                    logger.info(f"[VALIDATION] Gaps addressed this turn: {', '.join(removed_gaps)}")
+                logger.info(f"[VALIDATION] Remaining gaps: {len(remaining_gaps)} - {remaining_gaps}")
+                logger.info(f"[VALIDATION] Ready: {validation_ready}, Reasoning: {reasoning}")
+                
+                return validation_ready, remaining_gaps
+                
+            except json.JSONDecodeError as e:
+                logger.warning(f"[VALIDATION] JSON parse failed: {e}")
         
-        if removed_gaps:
-            logger.info(f"[VALIDATION]  Total gaps addressed this turn: {', '.join(removed_gaps)}")
-        logger.info(f"[VALIDATION]  Remaining gaps: {len(remaining_gaps)} - {remaining_gaps}")
+        # Fallback: look for READY in response
+        validation_ready = "READY" in validation_response.upper() and "NOT READY" not in validation_response.upper()
+        logger.info(f"[VALIDATION] Fallback parsing - Ready: {validation_ready}")
+        return validation_ready, current_gaps
         
-        return validation_ready, remaining_gaps
     except Exception as e:
-        logger.warning(f"[VALIDATION]  Check failed with error: {e}")
+        logger.warning(f"[VALIDATION] Check failed with error: {e}")
         return False, current_gaps
 
 
@@ -461,13 +472,13 @@ class BrainBasedWorkflowExecutor(Executor):
             await self._handle_messages_inner(messages, ctx)
         except Exception as e:
             error_msg = (
-                f"❌ **WORKFLOW ERROR**\n\n"
+                f" **WORKFLOW ERROR**\n\n"
                 f"**Type:** `{type(e).__name__}`\n"
                 f"**Message:** `{str(e)[:500]}`\n\n"
                 f"**Traceback:**\n```\n{traceback.format_exc()[:1500]}\n```\n\n"
                 f"_Type 'reset' to start over_"
             )
-            logger.error(f"❌ Top-level error: {type(e).__name__}: {e}")
+            logger.error(f" Top-level error: {type(e).__name__}: {e}")
             logger.error(traceback.format_exc())
             
             try:
@@ -552,7 +563,7 @@ class BrainBasedWorkflowExecutor(Executor):
 - Seen conv IDs: {len(seen_ids)}
 
 **Diagnosis:**
-{"✅ Plan A: Personal sessions via request_context" if not is_global_session else "⚠️ Plan B: Global fallback (single user)"}{context_reminder}"""
+{" Plan A: Personal sessions via request_context" if not is_global_session else "⚠️ Plan B: Global fallback (single user)"}{context_reminder}"""
             await emit_response(ctx, debug_msg, self.id)
             return
         
@@ -562,10 +573,10 @@ class BrainBasedWorkflowExecutor(Executor):
 - Mode: {session_mode} session
 - Conversation ID: `{conversation_id[:20]}...` 
 - State: {conv_state.state}
-- CV: {'✅ Received' if conv_state.cv_text else '❌ Not yet'}
-- Job: {'✅ Received' if conv_state.job_text else '❌ Not yet'}
+- CV: {' Received' if conv_state.cv_text else ' Not yet'}
+- Job: {' Received' if conv_state.job_text else ' Not yet'}
 
-{"⚠️ Global mode = single user only (Playground)" if is_global_session else "✅ Personal mode = multi-user supported (Teams)"}"""
+{" Global mode = single user only (Playground)" if is_global_session else " Personal mode = multi-user supported (Teams)"}"""
             await emit_response(ctx, status_msg, self.id)
             return
         
@@ -770,22 +781,32 @@ class BrainBasedWorkflowExecutor(Executor):
                 logger.info("[Q&A] Starting Q&A phase...")
                 
                 try:
-                    # Q&A agent generates first question - set up CONVERSATIONAL context
-                    qna_prompt = f"""You're having a career chat with someone interested in this role.
+                    # Q&A agent generates first question - give context but NOT gaps
+                    # Q&A should explore naturally; Validation tracks gaps separately
+                    
+                    # Truncate CV and job for context (not full text)
+                    cv_summary = conv_state.cv_text[:1200] + "..." if len(conv_state.cv_text) > 1200 else conv_state.cv_text
+                    job_summary = conv_state.job_text[:800] + "..." if len(conv_state.job_text) > 800 else conv_state.job_text
+                    
+                    qna_prompt = f"""You're having a career chat with someone interested in a role.
 
-BACKGROUND CONTEXT (use naturally, don't interrogate):
-- Their CV matched {score}% of requirements
-- There are {len(gaps)} areas to explore through natural conversation
+CANDIDATE'S BACKGROUND (from their CV):
+{cv_summary}
+
+JOB THEY'RE EXPLORING:
+{job_summary}
+
+MATCH SCORE: {score}%
 
 YOUR APPROACH:
-- Start by getting to know them - what excites them, their background, their goals
-- Let gaps come up NATURALLY through stories and follow-up questions
-- Ask follow-up questions about what they share - dig deeper, be curious
-- Don't jump from topic to topic - explore each area thoroughly before moving on
-- Build on their answers rather than switching to new topics
-- DON'T ask about specific technologies by name yet - let them tell you what they've worked with
+- You KNOW their background - reference it naturally, don't ask them to repeat it
+- Have a genuine conversation about their experience and interests
+- Ask follow-up questions that dig deeper into what they've done
+- Be curious about their projects, motivations, and career goals
+- Don't interrogate or run through a checklist
+- Let the conversation flow naturally
 
-Start with a warm, open question about their background or what drew them to this opportunity."""
+Start with something specific from their CV that caught your attention, then explore from there."""
                     
                     qna_result = await self._qna_agent.run(qna_prompt, thread=conv_state.qna_thread)
                     first_question = qna_result.messages[-1].text
@@ -935,8 +956,7 @@ Don't mention 'gaps' or 'requirements' - just ask about related experiences. Be 
 **ALL INITIAL GAPS (with status):**
 {chr(10).join(f'- ✅ {g} (ADDRESSED)' for g in addressed_gaps) if addressed_gaps else ''}
 {chr(10).join(f'- ❌ {g} (NOT ADDRESSED)' for g in remaining_gaps) if remaining_gaps else ''}
-
-**IMPORTANT:** Your recommendation MUST include a section that lists EVERY gap above and summarizes what was learned (or note if it wasn't discussed)."""
+"""
         
         recommendation_prompt = f"""**CV:**
 {conv_state.cv_text}
@@ -951,13 +971,6 @@ Don't mention 'gaps' or 'requirements' - just ask about related experiences. Be 
 
 **Q&A CONVERSATION HISTORY:**
 {qna_insights if qna_insights else "No Q&A conversation - high initial match score."}
-
-**CRITICAL INSTRUCTIONS:**
-1. Your recommendation MUST include a section called "## Gap Analysis Summary"
-2. In that section, list EVERY gap from the initial gaps list above
-3. For each gap, indicate if it was ✅ ADDRESSED or ❌ NOT ADDRESSED
-4. For addressed gaps, briefly summarize what was learned
-5. For unaddressed gaps, note they weren't discussed
 
 Please provide your full, detailed recommendation now."""
         
@@ -1041,8 +1054,10 @@ Please provide your full, detailed recommendation now."""
             # Extract first line or header as title
             lines = section.strip().split('\n')
             first_line = lines[0] if lines else f"Section {i}"
-            # Clean up header (remove ##, **, etc.)
+            # Clean up header (remove ##, **, emojis, etc.)
             title = re.sub(r'^[\#\*\s]+', '', first_line).strip()
+            # Remove emojis (unicode emoji ranges)
+            title = re.sub(r'[\U0001F300-\U0001F9FF\U00002600-\U000027BF\U0001F600-\U0001F64F]+', '', title).strip()
             if not title:
                 title = f"Section {i}"
             # Truncate long titles
@@ -1050,7 +1065,7 @@ Please provide your full, detailed recommendation now."""
                 title = title[:47] + "..."
             menu_items.append(f"**{i}.** {title}")
         
-        return "📋 **Sections:**\n" + "\n".join(menu_items) + "\n\n_Type a number to view that section, or **'done'** when finished._"
+        return "**Sections:**\n" + "\n".join(menu_items) + "\n\n_Type a number to view that section, or **'done'** when finished._"
     
     async def _handle_post_recommendation(
         self,
