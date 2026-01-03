@@ -612,15 +612,8 @@ class BrainBasedWorkflowExecutor(Executor):
             await self._handle_viewing_recommendation(ctx, conv_state, user_input, conversation_id)
         
         elif conv_state.state == "complete":
-            # Check if we need to generate recommendation first (validation_ready but not yet generated)
-            if conv_state.validation_ready and conv_state.analysis_text and not hasattr(conv_state, '_recommendation_sent'):
-                logger.info("[COMPLETE] Validation ready - generating recommendation now")
-                conv_state._recommendation_sent = True
-                qna_summary = "\n".join(conv_state.qna_history[-10:]) if conv_state.qna_history else "Q&A conversation completed."
-                await self._generate_recommendation(ctx, conv_state, qna_summary)
-            else:
-                # After recommendation, allow user to try another job or update CV
-                await self._handle_post_recommendation(ctx, conv_state, user_input, conversation_id)
+            # After recommendation, allow user to try another job or update CV
+            await self._handle_post_recommendation(ctx, conv_state, user_input, conversation_id)
     
     async def _handle_collecting(
         self, 
@@ -1189,7 +1182,7 @@ Please provide your full, detailed recommendation now."""
         
         # User typed something else - show help
         menu = self._build_recommendation_menu(sections)
-        await emit_response(ctx, f"I'm showing you the recommendation sections. {menu}", self.id)
+        await emit_response(ctx, f"Here's your recommendation for this job! {menu}", self.id)
 
 
 # ============================================================================
