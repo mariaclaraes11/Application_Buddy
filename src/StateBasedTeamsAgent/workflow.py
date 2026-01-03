@@ -57,17 +57,19 @@ _conversation_store: Dict[str, "ConversationState"] = {}
 @dataclass
 class ConversationState:
     """Tracks state for a single conversation."""
-    state: str = "collecting"  # collecting, waiting_confirmation, analyzing, qna, complete
+    state: str = "collecting"  # collecting, waiting_confirmation, analyzing, qna, viewing_recommendation, complete
     cv_text: Optional[str] = None
     job_text: Optional[str] = None
     analysis_text: Optional[str] = None
-    gaps: List[str] = field(default_factory=list)
+    gaps: List[str] = field(default_factory=list)  # Remaining gaps (shrinks as addressed)
     initial_gaps: List[str] = field(default_factory=list)  # Original gaps before Q&A
+    addressed_gaps: List[str] = field(default_factory=list)  # Gaps that were addressed in Q&A
     score: int = 0
     qna_history: List[str] = field(default_factory=list)
     brain_thread: Any = None  # Thread for Brain agent memory
     qna_thread: Any = None    # Thread for Q&A agent memory
     validation_ready: bool = False  # Set by validation agent when all gaps addressed
+    recommendation_sections: List[str] = field(default_factory=list)  # Sections for menu-based browsing
 
 
 def get_conversation_state(conv_id: str) -> ConversationState:
@@ -595,6 +597,9 @@ class BrainBasedWorkflowExecutor(Executor):
         elif conv_state.state == "qna":
             await self._handle_qna(ctx, conv_state, user_input, conversation_id)
         
+        elif conv_state.state == "viewing_recommendation":
+            await self._handle_viewing_recommendation(ctx, conv_state, user_input, conversation_id)
+        
         elif conv_state.state == "complete":
             # Check if we need to generate recommendation first (validation_ready but not yet generated)
             if conv_state.validation_ready and conv_state.analysis_text and not hasattr(conv_state, '_recommendation_sent'):
@@ -770,7 +775,7 @@ class BrainBasedWorkflowExecutor(Executor):
 
 BACKGROUND CONTEXT (use naturally, don't interrogate):
 - Their CV matched {score}% of requirements
-- Areas worth exploring through conversation: {', '.join(gaps[:5])}
+- There are {len(gaps)} areas to explore through natural conversation
 
 YOUR APPROACH:
 - Start by getting to know them - what excites them, their background, their goals
@@ -778,8 +783,9 @@ YOUR APPROACH:
 - Ask follow-up questions about what they share - dig deeper, be curious
 - Don't jump from topic to topic - explore each area thoroughly before moving on
 - Build on their answers rather than switching to new topics
+- DON'T ask about specific technologies by name yet - let them tell you what they've worked with
 
-Start with a warm, open question about them or what drew them to this role."""
+Start with a warm, open question about their background or what drew them to this opportunity."""
                     
                     qna_result = await self._qna_agent.run(qna_prompt, thread=conv_state.qna_thread)
                     first_question = qna_result.messages[-1].text
@@ -839,19 +845,21 @@ Start with a warm, open question about them or what drew them to this role."""
         if conv_state.qna_thread is None:
             conv_state.qna_thread = self._qna_agent.get_new_thread()
         
-        # Steer toward a gap every 4 exchanges to ensure coverage
+        # Every 4 exchanges, Validation tells us which gap to explore next
         user_exchanges = len([h for h in conv_state.qna_history if h.startswith("User:")])
         should_target_gap = (user_exchanges > 0 and user_exchanges % 4 == 0 and conv_state.gaps)
         
         if should_target_gap:
+            # Get next gap from validation's remaining list
             target_gap = conv_state.gaps[0]
             qna_prompt = f"""The user just responded: "{user_input}"
 
 Acknowledge their response briefly, then naturally steer to explore: {target_gap}
 
-Don't mention 'gaps' - just ask about related experiences. Be conversational and brief."""
+Don't mention 'gaps' or 'requirements' - just ask about related experiences. Be conversational and brief."""
             logger.info(f"[Q&A] Steering toward gap: {target_gap}")
         else:
+            # Normal turn - Q&A just continues natural conversation (no gap knowledge)
             qna_prompt = f"User response: {user_input}"
         
         # Get Q&A response
@@ -867,22 +875,25 @@ Don't mention 'gaps' - just ask about related experiences. Be conversational and
             conv_state.gaps,
             conv_state.qna_history
         )
+        
+        # Track which gaps were addressed (removed from remaining)
+        newly_addressed = [g for g in conv_state.gaps if g not in updated_gaps]
+        conv_state.addressed_gaps.extend(newly_addressed)
         conv_state.gaps = updated_gaps
         conv_state.validation_ready = validation_ready
-        logger.info(f"[VALIDATION] Ready: {validation_ready}, Remaining gaps: {len(updated_gaps)}")
+        logger.info(f"[VALIDATION] Ready: {validation_ready}, Remaining gaps: {len(updated_gaps)}, Addressed: {len(conv_state.addressed_gaps)}")
         
-        # Build the response message
+        # Check if all gaps are covered - ask user if ready for recommendation
         if validation_ready or len(updated_gaps) == 0:
-            # All gaps addressed - just show the Q&A response, don't add extra question
-            # The Q&A agent's instructions already handle graceful endings
-            logger.info("[Q&A] All gaps addressed - showing Q&A response only")
+            logger.info("[VALIDATION] All gaps addressed - asking user if ready for recommendation")
             response_msg = (
                 f"**[Q&A Agent]** {response}\n\n"
-                "*(Type 'done' for your recommendation)*"
+                "---\n\n"
+                "✅ **Great conversation!** I think we've covered all the key areas.\n\n"
+                "Ready for your recommendation? Just type **'done'** and I'll give you my assessment!"
             )
-            # Don't auto-complete yet - wait for user to confirm with 'done'
         else:
-            # Still have gaps to explore - normal Q&A flow
+            # Still have gaps to explore - continue Q&A
             response_msg = f"**[Q&A Agent]** {response}\n\n*(Type 'done' anytime for your recommendation)*"
         
         await emit_response(ctx, response_msg, self.id)
@@ -909,13 +920,23 @@ Don't mention 'gaps' - just ask about related experiences. Be conversational and
         
         logger.info("[RECOMMENDER] Generating final recommendation...")
         
-        # Build gap coverage summary - all gaps should be addressed by validation agent
+        # Build comprehensive gap coverage summary
         initial_gaps = conv_state.initial_gaps if conv_state.initial_gaps else []
+        addressed_gaps = conv_state.addressed_gaps if conv_state.addressed_gaps else []
+        remaining_gaps = conv_state.gaps if conv_state.gaps else []
         
-        gap_summary = f"""**INITIAL GAPS IDENTIFIED ({len(initial_gaps)}):**
-{chr(10).join(f'- {g}' for g in initial_gaps) if initial_gaps else 'None identified'}
+        # Format gaps with their status
+        gap_summary = f"""**GAP COVERAGE SUMMARY:**
 
-All gaps were explored during the Q&A conversation. The validation agent confirmed each area was addressed."""
+**Total Gaps Identified:** {len(initial_gaps)}
+**Gaps Addressed in Q&A:** {len(addressed_gaps)}
+**Gaps NOT Addressed:** {len(remaining_gaps)}
+
+**ALL INITIAL GAPS (with status):**
+{chr(10).join(f'- ✅ {g} (ADDRESSED)' for g in addressed_gaps) if addressed_gaps else ''}
+{chr(10).join(f'- ❌ {g} (NOT ADDRESSED)' for g in remaining_gaps) if remaining_gaps else ''}
+
+**IMPORTANT:** Your recommendation MUST include a section that lists EVERY gap above and summarizes what was learned (or note if it wasn't discussed)."""
         
         recommendation_prompt = f"""**CV:**
 {conv_state.cv_text}
@@ -928,31 +949,61 @@ All gaps were explored during the Q&A conversation. The validation agent confirm
 
 {gap_summary}
 
-**Q&A CONVERSATION (how gaps were addressed):**
+**Q&A CONVERSATION HISTORY:**
 {qna_insights if qna_insights else "No Q&A conversation - high initial match score."}
 
-Please provide your recommendation. Include a section titled "Gaps Explored During Q&A" that lists each initial gap and summarizes what was learned about the candidate's experience in that area."""
+**CRITICAL INSTRUCTIONS:**
+1. Your recommendation MUST include a section called "## Gap Analysis Summary"
+2. In that section, list EVERY gap from the initial gaps list above
+3. For each gap, indicate if it was ✅ ADDRESSED or ❌ NOT ADDRESSED
+4. For addressed gaps, briefly summarize what was learned
+5. For unaddressed gaps, note they weren't discussed
+
+Please provide your full, detailed recommendation now."""
         
         result = await self._recommender.run(recommendation_prompt)
         recommendation = result.messages[-1].text
         
-        # Send as ONE message to avoid 400 Bad Request on Teams
-        # Multiple rapid emit_response calls cause Bot Framework to reject the request
-        follow_up = (
-            "---\n\n"
-            "🔄 **What's next?**\n\n"
-            "• Try a **new job description** (just paste it)\n"
-            "• Update your **CV** and try again\n"
-            "• Type **'reset'** to start completely fresh"
-        )
+        # Split recommendation into sections for menu-based browsing
+        import re
+        sections = re.split(r'\n(?=## )', recommendation)
+        # Filter out empty sections
+        sections = [s.strip() for s in sections if s.strip()]
         
-        combined = f"**[Recommendation Agent]** Here's my assessment:\n\n{recommendation}\n\n{follow_up}"
+        # Store sections for menu navigation
+        conv_state.recommendation_sections = sections
         
-        # Truncate if too long for Teams (4000 char limit for single message)
-        if len(combined) > 3900:
-            combined = combined[:3850] + "\n\n*(message truncated)*"
-        
-        await emit_response(ctx, combined, self.id)
+        if len(sections) > 1:
+            # Menu-based approach: show first section + menu
+            first_section = sections[0]
+            if len(first_section) > 3500:
+                first_section = first_section[:3500] + "..."
+            
+            menu = self._build_recommendation_menu(sections)
+            
+            first_msg = f"**[Recommendation Agent]** Here's my assessment:\n\n{first_section}\n\n---\n\n{menu}"
+            await emit_response(ctx, first_msg, self.id)
+            
+            # Set state to viewing_recommendation for menu navigation
+            conv_state.state = "viewing_recommendation"
+            logger.info(f"[RECOMMENDER] Showing menu with {len(sections)} sections")
+        else:
+            # Single section or short recommendation - show all with follow-up
+            follow_up = (
+                "---\n\n"
+                "🔄 **What's next?**\n\n"
+                "• Try a **new job description** (just paste it)\n"
+                "• Update your **CV** and try again\n"
+                "• Type **'reset'** to start completely fresh"
+            )
+            
+            full_message = f"**[Recommendation Agent]** Here's my assessment:\n\n{recommendation}\n\n{follow_up}"
+            
+            if len(full_message) > 3800:
+                full_message = full_message[:3750] + "..."
+            
+            await emit_response(ctx, full_message, self.id)
+            conv_state.state = "complete"
     
     def _split_recommendation_into_sections(self, recommendation: str) -> list:
         """Split recommendation text into logical sections for separate messages."""
@@ -981,6 +1032,25 @@ Please provide your recommendation. Include a section titled "Gaps Explored Duri
             result.append(current)
         
         return result if result else [recommendation]
+    
+    def _build_recommendation_menu(self, sections: List[str]) -> str:
+        """Build a numbered menu from recommendation sections."""
+        import re
+        menu_items = []
+        for i, section in enumerate(sections, 1):
+            # Extract first line or header as title
+            lines = section.strip().split('\n')
+            first_line = lines[0] if lines else f"Section {i}"
+            # Clean up header (remove ##, **, etc.)
+            title = re.sub(r'^[\#\*\s]+', '', first_line).strip()
+            if not title:
+                title = f"Section {i}"
+            # Truncate long titles
+            if len(title) > 50:
+                title = title[:47] + "..."
+            menu_items.append(f"**{i}.** {title}")
+        
+        return "📋 **Sections:**\n" + "\n".join(menu_items) + "\n\n_Type a number to view that section, or **'done'** when finished._"
     
     async def _handle_post_recommendation(
         self,
@@ -1065,6 +1135,46 @@ Please provide your recommendation. Include a section titled "Gaps Explored Duri
             response = response.replace("[JOB_RECEIVED]", "").strip()
         
         await emit_response(ctx, response, self.id)
+
+    async def _handle_viewing_recommendation(
+        self,
+        ctx: WorkflowContext,
+        conv_state: ConversationState,
+        user_input: str,
+        conversation_id: str
+    ) -> None:
+        """Handle menu navigation while viewing recommendation sections."""
+        
+        user_lower = user_input.lower().strip()
+        sections = conv_state.recommendation_sections
+        
+        # User is done viewing - go to Brain for "what next"
+        if user_lower == 'done':
+            conv_state.state = "complete"
+            logger.info("[VIEWING_RECOMMENDATION] User done - delegating to Brain")
+            await self._handle_post_recommendation(ctx, conv_state, "I'm done reviewing the recommendation. What can I do next?", conversation_id)
+            return
+        
+        # User wants to see a specific section
+        if user_lower.isdigit():
+            section_num = int(user_lower)
+            if 1 <= section_num <= len(sections):
+                section = sections[section_num - 1]
+                if len(section) > 3500:
+                    section = section[:3500] + "..."
+                
+                menu = self._build_recommendation_menu(sections)
+                response = f"{section}\n\n---\n\n{menu}"
+                await emit_response(ctx, response, self.id)
+                logger.info(f"[VIEWING_RECOMMENDATION] Showed section {section_num}/{len(sections)}")
+                return
+            else:
+                await emit_response(ctx, f"Please enter a number between 1 and {len(sections)}, or **'done'** when finished.", self.id)
+                return
+        
+        # User typed something else - show help
+        menu = self._build_recommendation_menu(sections)
+        await emit_response(ctx, f"I'm showing you the recommendation sections. {menu}", self.id)
 
 
 # ============================================================================
