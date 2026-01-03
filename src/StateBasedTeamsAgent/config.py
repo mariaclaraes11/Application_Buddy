@@ -29,6 +29,12 @@ class Config(BaseSettings):
     max_workflow_turns: int = 15
     similarity_threshold: float = 0.7
     
+    # Document Intelligence (PDF extraction) - uses Managed Identity, no key needed
+    doc_intelligence_endpoint: str = ""
+    
+    # AI Language (PII removal) - uses Managed Identity, no key needed
+    language_endpoint: str = ""
+    
     def model_post_init(self, __context):
         """Set derived values after initialization"""
         # If azure_ai_foundry_endpoint not set, try AZURE_AI_PROJECT_ENDPOINT

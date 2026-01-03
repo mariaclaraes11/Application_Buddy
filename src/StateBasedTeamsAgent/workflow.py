@@ -350,6 +350,61 @@ def extract_message_text(msg: ChatMessage) -> str:
     return str(msg)
 
 
+async def extract_pdf_from_messages(messages: List[ChatMessage]) -> Optional[bytes]:
+    """
+    Extract PDF attachment from messages if present.
+    
+    Teams sends attachments with content URLs that need to be downloaded.
+    Returns PDF bytes if found, None otherwise.
+    """
+    import aiohttp
+    
+    for msg in messages:
+        if not hasattr(msg, 'content') or not msg.content:
+            continue
+            
+        for content in msg.content:
+            # Check for file content type
+            content_type = getattr(content, 'type', None) or getattr(content, 'content_type', '')
+            
+            # Check if it's a PDF
+            if 'pdf' in str(content_type).lower():
+                url = getattr(content, 'url', None) or getattr(content, 'content_url', None)
+                if url:
+                    logger.info(f"[PDF] Found PDF attachment: {url[:80]}...")
+                    try:
+                        async with aiohttp.ClientSession() as session:
+                            async with session.get(url) as response:
+                                if response.status == 200:
+                                    data = await response.read()
+                                    logger.info(f"[PDF] Downloaded {len(data)} bytes")
+                                    return data
+                                else:
+                                    logger.error(f"[PDF] Download failed: HTTP {response.status}")
+                    except Exception as e:
+                        logger.error(f"[PDF] Download error: {e}")
+            
+            # Also check attachments list (alternative format)
+            attachments = getattr(content, 'attachments', []) or []
+            for att in attachments:
+                att_type = getattr(att, 'content_type', '') or getattr(att, 'type', '')
+                if 'pdf' in str(att_type).lower():
+                    url = getattr(att, 'content_url', None) or getattr(att, 'url', None)
+                    if url:
+                        logger.info(f"[PDF] Found PDF in attachments list: {url[:80]}...")
+                        try:
+                            async with aiohttp.ClientSession() as session:
+                                async with session.get(url) as response:
+                                    if response.status == 200:
+                                        data = await response.read()
+                                        logger.info(f"[PDF] Downloaded {len(data)} bytes")
+                                        return data
+                        except Exception as e:
+                            logger.error(f"[PDF] Download error: {e}")
+    
+    return None
+
+
 async def check_validation_status(
     validation_agent: ChatAgent, 
     current_gaps: List[str], 
@@ -595,7 +650,7 @@ class BrainBasedWorkflowExecutor(Executor):
         
         # Route based on state
         if conv_state.state == "collecting":
-            await self._handle_collecting(ctx, conv_state, user_input, conversation_id)
+            await self._handle_collecting(ctx, conv_state, user_input, conversation_id, messages)
         
         elif conv_state.state == "waiting_confirmation":
             await self._handle_confirmation(ctx, conv_state, user_input, conversation_id)
@@ -620,7 +675,8 @@ class BrainBasedWorkflowExecutor(Executor):
         ctx: WorkflowContext, 
         conv_state: ConversationState, 
         user_input: str,
-        conversation_id: str
+        conversation_id: str,
+        messages: List[ChatMessage] = None
     ) -> None:
         """Brain handles conversation while collecting CV and job."""
         
@@ -628,6 +684,64 @@ class BrainBasedWorkflowExecutor(Executor):
         if conv_state.brain_thread is None:
             conv_state.brain_thread = self._brain.get_new_thread()
             logger.info("Created new Brain thread")
+        
+        # Check for PDF attachment (CV upload) before processing text
+        if messages and conv_state.cv_text is None:
+            try:
+                pdf_bytes = await extract_pdf_from_messages(messages)
+                
+                if pdf_bytes:
+                    logger.info("[PDF] Processing PDF CV attachment...")
+                    await emit_response(ctx, "📄 **Got your CV!** Processing the PDF and removing personal contact info for privacy...", self.id)
+                    
+                    # Process PDF: extract text + remove PII
+                    from document_processor import get_document_processor
+                    config = Config()
+                    
+                    # Check if document processor is configured
+                    if not config.doc_intelligence_endpoint or not config.language_endpoint:
+                        await emit_response(
+                            ctx,
+                            "⚠️ PDF processing isn't configured yet. Please **copy-paste your CV text** instead.\n\n"
+                            "_(Admin: Set DOC_INTELLIGENCE_ENDPOINT/KEY and LANGUAGE_ENDPOINT/KEY in .env)_",
+                            self.id
+                        )
+                        return
+                    
+                    processor = get_document_processor(config)
+                    extracted_cv = await processor.process_cv_pdf(pdf_bytes)
+                    
+                    if extracted_cv and len(extracted_cv.strip()) > 100:
+                        conv_state.cv_text = extracted_cv
+                        logger.info(f"[PDF] CV extracted and cleaned: {len(extracted_cv)} chars")
+                        
+                        # Ask for job description
+                        await emit_response(
+                            ctx, 
+                            f"✅ **CV received!** Extracted {len(extracted_cv):,} characters.\n\n"
+                            "Personal contact details (phone, email, address) have been removed for privacy - your name and professional info are kept.\n\n"
+                            "Now, please share the **job description** you'd like me to analyze against your CV.",
+                            self.id
+                        )
+                        return
+                    else:
+                        await emit_response(
+                            ctx,
+                            "⚠️ I couldn't extract much text from that PDF. It might be a scanned image.\n\n"
+                            "Could you try **copy-pasting your CV text** instead?",
+                            self.id
+                        )
+                        return
+                        
+            except Exception as e:
+                logger.error(f"[PDF] Error processing PDF: {e}", exc_info=True)
+                await emit_response(
+                    ctx,
+                    f"⚠️ Had trouble processing that PDF. Could you try **copy-pasting your CV text** instead?\n\n"
+                    f"_(Error: {str(e)[:100]})_",
+                    self.id
+                )
+                return
         
         # If no user input, send initial greeting
         if not user_input.strip():
