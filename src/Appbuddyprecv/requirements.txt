@@ -1,11 +1,10 @@
-# Agent Framework for multi-agent orchestration (preview version required)
-agent-framework-azure-ai --pre
+# Azure AI Agent Server for hosted agents
+azure-ai-agentserver-agentframework
+agent-framework
 
-# Microsoft DevUI for workflow visualization
-agent-framework-devui --pre
-
-# Azure AI integration
-azure-ai-projects
+# Azure AI integration (versions must be compatible with agentserver)
+azure-ai-projects>=1.0.0b11
+azure-ai-inference
 azure-identity
 
 # Additional utilities
@@ -25,4 +24,4 @@ microsoft-agents-activity
 
 # Note: Azure Developer CLI (azd) is not available via pip
 # Run setup_deployment.sh or install manually with:
-# curl -fsSL https://aka.ms/install-azd.sh | bashstreamlit>=1.28.0
+# curl -fsSL https://aka.ms/install-azd.sh | bash
