@@ -52,6 +52,12 @@ class Config(BaseSettings):
         if not self.endpoint_url and self.azure_ai_foundry_endpoint:
             # Extract base endpoint for Agent Framework
             self.endpoint_url = self.azure_ai_foundry_endpoint.replace('/api/projects/', '/').replace('/workspace', '').replace('/project', '')
+        
+        # Load Document Intelligence and Language endpoints if not set
+        if not self.doc_intelligence_endpoint:
+            self.doc_intelligence_endpoint = os.getenv("DOC_INTELLIGENCE_ENDPOINT", "")
+        if not self.language_endpoint:
+            self.language_endpoint = os.getenv("LANGUAGE_ENDPOINT", "")
     
     class Config:
         env_file = ".env"

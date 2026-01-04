@@ -12,7 +12,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src', 'StateBa
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from dotenv import load_dotenv
-load_dotenv()
+# Load .env from the project root using absolute path
+env_path = "/home/clara/projects/application_buddy/Application_Buddy/.env"
+load_dotenv(env_path, override=True)
 
 # Import after path setup
 from agent_framework import ChatAgent, ChatMessage, Role, TextContent
@@ -257,13 +259,17 @@ def init_session_state():
 @st.cache_resource
 def get_chat_client():
     """Create and cache the Azure OpenAI chat client."""
-    config = Config()
-    credential = DefaultAzureCredential()
+    from openai import AzureOpenAI
     
-    return AzureOpenAIChatClient(
-        azure_endpoint=config.azure_openai_endpoint,
-        credential=credential,
-        model=config.model_deployment_name,
+    # Use API key for local development (Managed Identity doesn't work locally)
+    api_key = os.getenv("AZURE_OPENAI_API_KEY")
+    endpoint = "https://smart-application-buddy.cognitiveservices.azure.com/"
+    api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-11-20")
+    
+    return AzureOpenAI(
+        api_key=api_key,
+        azure_endpoint=endpoint,
+        api_version=api_version,
     )
 
 
@@ -537,26 +543,33 @@ def render_collecting_cv():
             try:
                 # Try to use document processor
                 from src.StateBasedTeamsAgent.document_processor import CVDocumentProcessor
-                processor = CVDocumentProcessor()
                 
-                # Save temporarily
-                import tempfile
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
-                    tmp.write(uploaded_file.getvalue())
-                    tmp_path = tmp.name
+                # Load endpoints directly from env (bypass config caching issues)
+                doc_intel_endpoint = os.getenv("DOC_INTELLIGENCE_ENDPOINT", "")
+                lang_endpoint = os.getenv("LANGUAGE_ENDPOINT", "")
                 
-                # Process
-                cv_text = asyncio.run(processor.process_cv_pdf(tmp_path))
-                os.unlink(tmp_path)  # Clean up
-                
-                if cv_text:
-                    st.session_state.cv_text = cv_text
-                    st.session_state.state = 'collecting_job'
-                    add_chat_message('user', "[CV uploaded as PDF]")
-                    add_chat_message('assistant', "Thanks for uploading your CV! 📋 I've extracted the text and removed sensitive info. Now, paste the job description you're interested in.")
-                    st.rerun()
+                if not doc_intel_endpoint or not lang_endpoint:
+                    st.error("PDF processing not configured. Please paste your CV text instead.")
                 else:
-                    st.error("Couldn't extract text from PDF. Please try pasting the text instead.")
+                    processor = CVDocumentProcessor(
+                        doc_intelligence_endpoint=doc_intel_endpoint,
+                        language_endpoint=lang_endpoint
+                    )
+                    
+                    # Get PDF bytes directly from uploaded file
+                    pdf_bytes = uploaded_file.getvalue()
+                    
+                    # Process - pass bytes directly (not file path)
+                    cv_text = asyncio.run(processor.process_cv_pdf(pdf_bytes))
+                    
+                    if cv_text:
+                        st.session_state.cv_text = cv_text
+                        st.session_state.state = 'collecting_job'
+                        add_chat_message('user', "[CV uploaded as PDF]")
+                        add_chat_message('assistant', "Thanks for uploading your CV! 📋 I've extracted the text and removed sensitive info. Now, paste the job description you're interested in.")
+                        st.rerun()
+                    else:
+                        st.error("Couldn't extract text from PDF. Please try pasting the text instead.")
             except Exception as e:
                 st.error(f"Error processing PDF: {e}. Please try pasting the text instead.")
 
