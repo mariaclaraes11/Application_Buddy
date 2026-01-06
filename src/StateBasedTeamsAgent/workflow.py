@@ -259,33 +259,6 @@ async def emit_response(ctx: WorkflowContext, text: str, executor_id: str = "bra
 
 
 # ============================================================================
-# Workflow States
-# ============================================================================
-
-class WorkflowState(Enum):
-    """Possible states in the conversation workflow."""
-    COLLECTING = "collecting"  # Brain is collecting CV and job
-    ANALYZING = "analyzing"    # Running CV analysis
-    QNA = "qna"                # Q&A conversation
-    COMPLETE = "complete"       # Recommendation provided
-
-
-# ============================================================================
-# Message Types (kept for internal use)
-# ============================================================================
-
-@dataclass
-class AnalysisResult:
-    """Analysis result with routing decision."""
-    analysis_json: str
-    cv_text: str
-    job_description: str
-    needs_qna: bool
-    score: int
-    gaps: List[str] = field(default_factory=list)
-
-
-# ============================================================================
 # Helper Functions
 # ============================================================================
 
@@ -321,21 +294,6 @@ def should_run_qna(analysis_text: str) -> tuple[bool, int, list]:
     except Exception as e:
         logger.warning(f"Error in decision logic: {e}")
         return True, 0, gaps
-
-
-def detect_termination_question(response: str) -> bool:
-    """Check if response contains a termination question."""
-    termination_phrases = [
-        'anything else about the position',
-        'anything else about your background',
-        'anything else about the role',
-        'anything else about your experience',
-        'anything else you',
-        'before we wrap up',
-        "anything else",
-        "any other questions",
-    ]
-    return any(phrase in response.lower() for phrase in termination_phrases) and '?' in response
 
 
 def extract_message_text(msg: ChatMessage) -> str:
@@ -577,20 +535,10 @@ class BrainBasedWorkflowExecutor(Executor):
         """Inner handler - all the actual logic."""
         
         # Get conversation_id for state persistence
-        # DEBUG: Log ALL available context to find stable identifier
-        try:
-            from azure.ai.agentserver.core.logger import request_context
-            ctx_data = request_context.get() or {}
-            logger.info("=== ALL REQUEST CONTEXT KEYS ===")
-            for key, value in ctx_data.items():
-                logger.info(f"  {key}: {value}")
-        except Exception as e:
-            logger.warning(f"Could not inspect request_context: {e}")
-        
         conversation_id = get_conversation_id_from_context()
         is_global_session = (conversation_id == "global_session")
         session_mode = "🌍 Global" if is_global_session else "🔒 Personal"
-        logger.info(f"=== CONVERSATION ID: {conversation_id} ({session_mode}) ===")
+        logger.info(f"Conversation: {conversation_id[:20]}... ({session_mode})")
         
         # Get persisted state for this conversation
         conv_state = get_conversation_state(conversation_id)
@@ -638,7 +586,7 @@ class BrainBasedWorkflowExecutor(Executor):
 - Seen conv IDs: {len(seen_ids)}
 
 **Diagnosis:**
-{"✅ Personal session via request_context" if not is_global_session else "⚠️ Global fallback (single user)"}{context_reminder}"""
+{" Personal session via request_context" if not is_global_session else "⚠️ Global fallback (single user)"}{context_reminder}"""
             await emit_response(ctx, debug_msg, self.id)
             return
         
@@ -648,10 +596,10 @@ class BrainBasedWorkflowExecutor(Executor):
 - Mode: {session_mode} session
 - Conversation ID: `{conversation_id[:20]}...` 
 - State: {conv_state.state}
-- CV: {'✅ Received' if conv_state.cv_text else '❌ Not yet'}
-- Job: {'✅ Received' if conv_state.job_text else '❌ Not yet'}
+- CV: {' Received' if conv_state.cv_text else '❌ Not yet'}
+- Job: {' Received' if conv_state.job_text else '❌ Not yet'}
 
-{"✅ Personal mode = multi-user supported" if not is_global_session else "⚠️ Global mode = single user only"}"""
+{" Personal mode = multi-user supported" if not is_global_session else "⚠️ Global mode = single user only"}"""
             await emit_response(ctx, status_msg, self.id)
             return
         
@@ -713,23 +661,17 @@ class BrainBasedWorkflowExecutor(Executor):
                 
                 if pdf_bytes:
                     logger.info("[PDF] Processing PDF CV attachment...")
-                    await emit_response(ctx, "📄 **Got your CV!** Processing the PDF and removing personal contact info for privacy...", self.id)
+                    await emit_response(ctx, " **Got your CV!** Processing the PDF and removing personal contact info for privacy...", self.id)
                     
                     # Process PDF: extract text + remove PII
                     from document_processor import get_document_processor
                     config = Config()
                     
-                    # Debug: log what env vars we see
-                    logger.info(f"[PDF] Config check - doc_intelligence_endpoint: '{config.doc_intelligence_endpoint}'")
-                    logger.info(f"[PDF] Config check - language_endpoint: '{config.language_endpoint}'")
-                    logger.info(f"[PDF] ENV check - DOC_INTELLIGENCE_ENDPOINT: '{os.environ.get('DOC_INTELLIGENCE_ENDPOINT', 'NOT SET')}'")
-                    logger.info(f"[PDF] ENV check - LANGUAGE_ENDPOINT: '{os.environ.get('LANGUAGE_ENDPOINT', 'NOT SET')}'")
-                    
                     # Check if document processor is configured
                     if not config.doc_intelligence_endpoint or not config.language_endpoint:
                         await emit_response(
                             ctx,
-                            "⚠️ PDF processing isn't configured yet. Please **copy-paste your CV text** instead.\n\n"
+                            " PDF processing isn't configured yet. Please **copy-paste your CV text** instead.\n\n"
                             "_(Admin: Set DOC_INTELLIGENCE_ENDPOINT/KEY and LANGUAGE_ENDPOINT/KEY in .env)_",
                             self.id
                         )
@@ -745,7 +687,7 @@ class BrainBasedWorkflowExecutor(Executor):
                         # Ask for job description
                         await emit_response(
                             ctx, 
-                            f"✅ **CV received!** Extracted {len(extracted_cv):,} characters.\n\n"
+                            f" **CV received!** Extracted {len(extracted_cv):,} characters.\n\n"
                             "Personal contact details (phone, email, address) have been removed for privacy - your name and professional info are kept.\n\n"
                             "Now, please share the **job description** you'd like me to analyze against your CV.",
                             self.id
@@ -754,7 +696,7 @@ class BrainBasedWorkflowExecutor(Executor):
                     else:
                         await emit_response(
                             ctx,
-                            "⚠️ I couldn't extract much text from that PDF. It might be a scanned image.\n\n"
+                            " I couldn't extract much text from that PDF. It might be a scanned image.\n\n"
                             "Could you try **copy-pasting your CV text** instead?",
                             self.id
                         )
@@ -970,7 +912,7 @@ Start with something specific from their CV that caught your attention, then exp
                 
         except Exception as e:
             logger.error(f"Error during analysis: {e}")
-            await emit_response(ctx, f"⚠️ Error during analysis. Type 'reset' to try again.", self.id)
+            await emit_response(ctx, f" Error during analysis. Type 'reset' to try again.", self.id)
             conv_state.state = "collecting"
     
     async def _handle_qna(
@@ -1044,7 +986,7 @@ Don't mention 'gaps' or 'requirements' - just ask about related experiences. Be 
             response_msg = (
                 f"**[Q&A Agent]** {response}\n\n"
                 "---\n\n"
-                "✅ **Great conversation!** I think we've covered all the key areas.\n\n"
+                " **Great conversation!** I think we've covered all the key areas.\n\n"
                 "Ready for your recommendation? Just type **'done'** and I'll give you my assessment!"
             )
         else:
@@ -1052,18 +994,6 @@ Don't mention 'gaps' or 'requirements' - just ask about related experiences. Be 
             response_msg = f"**[Q&A Agent]** {response}\n\n*(Type 'done' anytime for your recommendation)*"
         
         await emit_response(ctx, response_msg, self.id)
-    
-    async def _get_qna_summary(self, conv_state: ConversationState) -> str:
-        """Get final summary from Q&A agent."""
-        if conv_state.qna_thread is None:
-            logger.info("[Q&A SUMMARY] No thread, skipping summary")
-            return "No Q&A conversation occurred."
-        
-        logger.info("[Q&A SUMMARY] Requesting summary from Q&A agent...")
-        summary_prompt = "Please provide your final assessment based on our conversation."
-        result = await self._qna_agent.run(summary_prompt, thread=conv_state.qna_thread)
-        logger.info("[Q&A SUMMARY] Summary received")
-        return result.messages[-1].text
     
     async def _generate_recommendation(
         self,
@@ -1088,8 +1018,8 @@ Don't mention 'gaps' or 'requirements' - just ask about related experiences. Be 
 **Gaps NOT Addressed:** {len(remaining_gaps)}
 
 **ALL INITIAL GAPS (with status):**
-{chr(10).join(f'- ✅ {g} (ADDRESSED)' for g in addressed_gaps) if addressed_gaps else ''}
-{chr(10).join(f'- ❌ {g} (NOT ADDRESSED)' for g in remaining_gaps) if remaining_gaps else ''}
+{chr(10).join(f'-  {g} (ADDRESSED)' for g in addressed_gaps) if addressed_gaps else ''}
+{chr(10).join(f'-  {g} (NOT ADDRESSED)' for g in remaining_gaps) if remaining_gaps else ''}
 """
         
         recommendation_prompt = f"""**CV:**
@@ -1151,34 +1081,6 @@ Please provide your full, detailed recommendation now."""
             
             await emit_response(ctx, full_message, self.id)
             conv_state.state = "complete"
-    
-    def _split_recommendation_into_sections(self, recommendation: str) -> list:
-        """Split recommendation text into logical sections for separate messages."""
-        import re
-        
-        # Split by markdown headers (## or **Section:**)
-        # Pattern matches ## Header or **Header** at start of line
-        pattern = r'(?=^##\s|\*\*[A-Z])'
-        sections = re.split(pattern, recommendation, flags=re.MULTILINE)
-        
-        # If no sections found, split by double newlines
-        if len(sections) <= 1:
-            sections = recommendation.split('\n\n')
-        
-        # Group small sections together (under 300 chars)
-        result = []
-        current = ""
-        for section in sections:
-            if len(current) + len(section) < 1500:  # Keep under limit
-                current += section
-            else:
-                if current.strip():
-                    result.append(current)
-                current = section
-        if current.strip():
-            result.append(current)
-        
-        return result if result else [recommendation]
     
     def _build_recommendation_menu(self, sections: List[str]) -> str:
         """Build a numbered menu from recommendation sections."""
