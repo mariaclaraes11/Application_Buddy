@@ -191,7 +191,7 @@ def _migrate_to_global_session():
 # Helper to emit response to HTTP (not just inter-executor messaging)
 # ============================================================================
 
-MAX_TEAMS_MESSAGE_LENGTH = 2000  # Keep responses concise for Teams
+MAX_MESSAGE_LENGTH = 16000  # Increased for Streamlit/Playground (Teams has its own limits)
 
 # Track last emit time to prevent rapid-fire messages (causes 400 on Teams)
 _last_emit_time: float = 0.0
@@ -217,11 +217,11 @@ async def emit_response(ctx: WorkflowContext, text: str, executor_id: str = "bra
         logger.info(f" Rate limiting: waiting {delay:.2f}s before emit")
         await asyncio.sleep(delay)
     
-    # Truncate if too long for Teams
+    # Only truncate extremely long responses (safety limit)
     original_len = len(text)
-    if original_len > MAX_TEAMS_MESSAGE_LENGTH:
-        text = text[:MAX_TEAMS_MESSAGE_LENGTH - 50] + "\n\n*(continued...)*"
-        logger.warning(f" Response truncated from {original_len} to {len(text)} chars")
+    if original_len > MAX_MESSAGE_LENGTH:
+        text = text[:MAX_MESSAGE_LENGTH - 50] + "\n\n*(truncated due to length)*"
+        logger.warning(f"⚠️ Response truncated from {original_len} to {len(text)} chars")
     
     try:
         update = AgentRunResponseUpdate(
@@ -569,7 +569,7 @@ class BrainBasedWorkflowExecutor(Executor):
         
         conversation_id = get_conversation_id_from_context()
         is_global_session = (conversation_id == "global_session")
-        session_mode = " Global" if is_global_session else "🔒 Personal"
+        session_mode = "🌍 Global" if is_global_session else "🔒 Personal"
         logger.info(f"=== CONVERSATION ID: {conversation_id} ({session_mode}) ===")
         
         # Get persisted state for this conversation
@@ -618,7 +618,7 @@ class BrainBasedWorkflowExecutor(Executor):
 - Seen conv IDs: {len(seen_ids)}
 
 **Diagnosis:**
-{" Plan A: Personal sessions via request_context" if not is_global_session else "⚠️ Plan B: Global fallback (single user)"}{context_reminder}"""
+{"✅ Personal session via request_context" if not is_global_session else "⚠️ Global fallback (single user)"}{context_reminder}"""
             await emit_response(ctx, debug_msg, self.id)
             return
         
@@ -628,10 +628,10 @@ class BrainBasedWorkflowExecutor(Executor):
 - Mode: {session_mode} session
 - Conversation ID: `{conversation_id[:20]}...` 
 - State: {conv_state.state}
-- CV: {' Received' if conv_state.cv_text else ' Not yet'}
-- Job: {' Received' if conv_state.job_text else ' Not yet'}
+- CV: {'✅ Received' if conv_state.cv_text else '❌ Not yet'}
+- Job: {'✅ Received' if conv_state.job_text else '❌ Not yet'}
 
-{" Global mode = single user only (Playground)" if is_global_session else " Personal mode = multi-user supported (Teams)"}"""
+{"✅ Personal mode = multi-user supported" if not is_global_session else "⚠️ Global mode = single user only"}"""
             await emit_response(ctx, status_msg, self.id)
             return
         
