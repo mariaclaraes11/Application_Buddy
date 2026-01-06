@@ -12,6 +12,7 @@ Compatible with: Teams, Foundry Playground, any UI.
 """
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 from enum import Enum
@@ -717,6 +718,12 @@ class BrainBasedWorkflowExecutor(Executor):
                     # Process PDF: extract text + remove PII
                     from document_processor import get_document_processor
                     config = Config()
+                    
+                    # Debug: log what env vars we see
+                    logger.info(f"[PDF] Config check - doc_intelligence_endpoint: '{config.doc_intelligence_endpoint}'")
+                    logger.info(f"[PDF] Config check - language_endpoint: '{config.language_endpoint}'")
+                    logger.info(f"[PDF] ENV check - DOC_INTELLIGENCE_ENDPOINT: '{os.environ.get('DOC_INTELLIGENCE_ENDPOINT', 'NOT SET')}'")
+                    logger.info(f"[PDF] ENV check - LANGUAGE_ENDPOINT: '{os.environ.get('LANGUAGE_ENDPOINT', 'NOT SET')}'")
                     
                     # Check if document processor is configured
                     if not config.doc_intelligence_endpoint or not config.language_endpoint:

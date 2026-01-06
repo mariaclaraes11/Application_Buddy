@@ -20,3 +20,7 @@ environment_variables:
       value: ${AZURE_OPENAI_ENDPOINT}
     - name: AZURE_OPENAI_CHAT_DEPLOYMENT_NAME
       value: gpt-4o
+    - name: DOC_INTELLIGENCE_ENDPOINT
+      value: ${DOC_INTELLIGENCE_ENDPOINT}
+    - name: LANGUAGE_ENDPOINT
+      value: ${LANGUAGE_ENDPOINT}

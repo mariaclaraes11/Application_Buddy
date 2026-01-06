@@ -28,6 +28,9 @@ services:
                   sku:
                     capacity: 10
                     name: GlobalStandard
+            env:
+                DOC_INTELLIGENCE_ENDPOINT: https://appbuddy-doc-intel.cognitiveservices.azure.com/
+                LANGUAGE_ENDPOINT: https://appbuddy-language.cognitiveservices.azure.com/
 infra:
     provider: bicep
     path: ./infra
