@@ -423,6 +423,13 @@ RECOMMENDATION CATEGORIES:
 
 OUTPUT FORMAT:
 
+**CRITICAL FORMATTING RULES:**
+- Use proper markdown with blank lines between sections
+- For numbered lists, put each item on its own line with a blank line before the list
+- For bullet points, put each item on its own line
+- Use headers (##, ###) to separate major sections
+- Ensure proper spacing so the response renders nicely in chat UIs
+
 **IMPORTANT - START WITH THIS AI DISCLAIMER:**
 Begin your response with a brief, friendly acknowledgment of AI limitations:
 "Here's my analysis based on what you've shared. Take it as one data point in your decision - you know your situation, the company culture, and your career goals better than any AI could! 🎯"
@@ -432,7 +439,7 @@ Begin your response with a brief, friendly acknowledgment of AI limitations:
 **Confidence:** [High/Medium/Low - how confident we are in this recommendation]
 
 **Why this recommendation?**
-[2-3 friendly sentences explaining the reasoning. Be encouraging but honest. Reference specific matches and gaps. Help them understand the decision so they feel informed, not just judged.]
+[4-5 detailed, friendly sentences explaining the reasoning. Be encouraging but honest. Reference specific matches and gaps with concrete examples. Help them understand the decision so they feel informed, not just judged. Explain HOW their background connects to the role requirements.]
 
 **Quick Take:** [One sentence summary - conversational and supportive, e.g., "You've got a solid foundation here - with a bit of prep on X, you'd be a strong candidate!"]
 
@@ -448,9 +455,12 @@ Begin your response with a brief, friendly acknowledgment of AI limitations:
 - [Examples of your approach, style, or motivations relevant to this position]
 - [Gaps that were addressed/clarified during our chat]
 
-## Areas of Concern
-- [Specific gaps with evidence from CV or Q&A]
-- [Skills still missing after our conversation]
+## 📝 What to Pay Some Attention To
+These aren't dealbreakers - just areas where a little preparation could strengthen your application:
+
+- [Specific gap with constructive suggestion on how to address it]
+- [Skill to develop with specific resources or approaches to learn it]
+- [Any area where extra preparation would help, with actionable advice]
 
 ## CV TAILORING FOR THIS ROLE (CRITICAL!)
 
@@ -542,7 +552,7 @@ Not all jobs are posted publicly. A personal connection can make a HUGE differen
 Remember: A recruiter manually reviews every application. A tailored CV that uses THEIR language and addresses THEIR needs will stand out. Generic CVs get minimal attention. Make this one count!""",
             "model_config": {
                 "temperature": 0.3,  # Balanced for supportive yet realistic advice
-                "max_tokens": 2500
+                "max_tokens": 4000  # Increased for more detailed recommendations
             }
         }
     

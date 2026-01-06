@@ -350,15 +350,34 @@ def extract_message_text(msg: ChatMessage) -> str:
     return str(msg)
 
 
-async def extract_pdf_from_messages(messages: List[ChatMessage]) -> Optional[bytes]:
+async def extract_pdf_from_messages(messages: List[ChatMessage], user_input: str = "") -> Optional[bytes]:
     """
     Extract PDF attachment from messages if present.
     
-    Teams sends attachments with content URLs that need to be downloaded.
+    Supports:
+    1. Teams/Foundry URL-based attachments (downloaded via HTTP)
+    2. Streamlit base64-encoded format: [PDF_ATTACHMENT:filename:base64data]
+    
     Returns PDF bytes if found, None otherwise.
     """
     import aiohttp
+    import base64
+    import re
     
+    # First check for base64-encoded PDF in user input (from Streamlit)
+    if user_input:
+        match = re.search(r'\[PDF_ATTACHMENT:([^:]+):([A-Za-z0-9+/=]+)\]', user_input)
+        if match:
+            filename = match.group(1)
+            b64_data = match.group(2)
+            try:
+                pdf_bytes = base64.b64decode(b64_data)
+                logger.info(f"[PDF] Decoded base64 PDF '{filename}': {len(pdf_bytes)} bytes")
+                return pdf_bytes
+            except Exception as e:
+                logger.error(f"[PDF] Base64 decode error: {e}")
+    
+    # Then check message content for URL-based attachments (Teams format)
     for msg in messages:
         if not hasattr(msg, 'content') or not msg.content:
             continue
@@ -686,9 +705,10 @@ class BrainBasedWorkflowExecutor(Executor):
             logger.info("Created new Brain thread")
         
         # Check for PDF attachment (CV upload) before processing text
-        if messages and conv_state.cv_text is None:
+        if conv_state.cv_text is None:
             try:
-                pdf_bytes = await extract_pdf_from_messages(messages)
+                # Pass user_input to extract base64-encoded PDFs from Streamlit
+                pdf_bytes = await extract_pdf_from_messages(messages or [], user_input)
                 
                 if pdf_bytes:
                     logger.info("[PDF] Processing PDF CV attachment...")
