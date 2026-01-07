@@ -24,3 +24,5 @@ environment_variables:
       value: ${DOC_INTELLIGENCE_ENDPOINT}
     - name: LANGUAGE_ENDPOINT
       value: ${LANGUAGE_ENDPOINT}
+    - name: AZURE_STORAGE_ACCOUNT_NAME
+      value: ${AZURE_STORAGE_ACCOUNT_NAME}

@@ -47,6 +47,128 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
+# User Profile Store (tracks application history across sessions)
+# ============================================================================
+
+@dataclass
+class ApplicationRecord:
+    """Single job application record."""
+    date: str
+    job_title: str
+    company: str
+    industry: str  # Could be LLM-extracted in future
+    score: int
+    must_have_gaps: List[str]
+    nice_to_have_gaps: List[str]
+    recommendation: str  # "apply", "apply_with_prep", "consider_alternatives"
+
+
+@dataclass 
+class UserProfile:
+    """Persistent user profile across sessions."""
+    applications: List[ApplicationRecord] = field(default_factory=list)
+    created_at: str = ""
+    updated_at: str = ""
+
+
+# In-memory profile cache (loaded from blob on first access)
+_profile_store: Dict[str, UserProfile] = {}
+
+
+def _get_blob_container():
+    """Get Azure Blob container client for profile storage."""
+    import os
+    storage_account = os.getenv("AZURE_STORAGE_ACCOUNT_NAME")
+    if not storage_account:
+        logger.info("[PROFILE] No AZURE_STORAGE_ACCOUNT_NAME configured")
+        return None
+    
+    try:
+        from azure.storage.blob import BlobServiceClient
+        from azure.identity import DefaultAzureCredential
+        
+        blob_service = BlobServiceClient(
+            account_url=f"https://{storage_account}.blob.core.windows.net",
+            credential=DefaultAzureCredential()
+        )
+        container = blob_service.get_container_client("user-profiles")
+        
+        # Create container if not exists
+        try:
+            container.create_container()
+            logger.info("[PROFILE] Created user-profiles container")
+        except Exception:
+            pass  # Already exists
+        
+        return container
+    except Exception as e:
+        logger.warning(f"[PROFILE] Blob client init failed: {e}")
+        return None
+
+
+def get_user_profile(user_id: str) -> UserProfile:
+    """Get or create user profile (loads from blob if not in memory)."""
+    if user_id in _profile_store:
+        return _profile_store[user_id]
+    
+    # Try loading from blob
+    container = _get_blob_container()
+    if container:
+        try:
+            blob = container.get_blob_client(f"{user_id}.json")
+            data = json.loads(blob.download_blob().readall())
+            profile = UserProfile(
+                applications=[ApplicationRecord(**app) for app in data.get("applications", [])],
+                created_at=data.get("created_at", ""),
+                updated_at=data.get("updated_at", "")
+            )
+            _profile_store[user_id] = profile
+            logger.info(f"[PROFILE] Loaded profile for {user_id}: {len(profile.applications)} applications")
+            return profile
+        except Exception as e:
+            logger.info(f"[PROFILE] No existing profile for {user_id}: {type(e).__name__}")
+    
+    # Create new profile
+    profile = UserProfile(created_at=datetime.now(tz=timezone.utc).isoformat())
+    _profile_store[user_id] = profile
+    return profile
+
+
+def save_user_profile(user_id: str, profile: UserProfile) -> bool:
+    """Save profile to blob storage."""
+    profile.updated_at = datetime.now(tz=timezone.utc).isoformat()
+    _profile_store[user_id] = profile
+    
+    container = _get_blob_container()
+    if container:
+        try:
+            blob = container.get_blob_client(f"{user_id}.json")
+            data = {
+                "applications": [
+                    {
+                        "date": app.date,
+                        "job_title": app.job_title,
+                        "company": app.company,
+                        "industry": app.industry,
+                        "score": app.score,
+                        "must_have_gaps": app.must_have_gaps,
+                        "nice_to_have_gaps": app.nice_to_have_gaps,
+                        "recommendation": app.recommendation,
+                    }
+                    for app in profile.applications
+                ],
+                "created_at": profile.created_at,
+                "updated_at": profile.updated_at
+            }
+            blob.upload_blob(json.dumps(data, indent=2), overwrite=True)
+            logger.info(f"[PROFILE] Saved profile for {user_id}: {len(profile.applications)} applications")
+            return True
+        except Exception as e:
+            logger.warning(f"[PROFILE] Save failed: {e}")
+    return False
+
+
+# ============================================================================
 # Conversation State Store (in-memory, keyed by conversation_id)
 # ============================================================================
 
@@ -1041,6 +1163,51 @@ Please provide your full, detailed recommendation now."""
         result = await self._recommender.run(recommendation_prompt)
         recommendation = result.messages[-1].text
         
+        # Save this application to user profile
+        try:
+            user_id = get_conversation_id_from_context()
+            profile = get_user_profile(user_id)
+            
+            # Determine recommendation category based on score and gaps
+            remaining_gap_count = len(remaining_gaps)
+            if conv_state.score >= 80 or remaining_gap_count == 0:
+                rec_category = "apply"
+            elif conv_state.score >= 60 and remaining_gap_count <= 3:
+                rec_category = "apply_with_prep"
+            else:
+                rec_category = "consider_alternatives"
+            
+            # Extract job title and company from job_text (simple heuristics)
+            job_lines = (conv_state.job_text or "").split('\n')[:10]
+            job_title = "Unknown Position"
+            company = "Unknown Company"
+            for line in job_lines:
+                line_clean = line.strip()
+                if not job_title or job_title == "Unknown Position":
+                    # First non-empty line often is title
+                    if line_clean and len(line_clean) < 100:
+                        job_title = line_clean
+                        continue
+                if 'company' in line.lower() or 'at ' in line.lower():
+                    company = line_clean
+                    break
+            
+            app_record = ApplicationRecord(
+                date=datetime.now(tz=timezone.utc).isoformat(),
+                job_title=job_title[:100],  # Truncate
+                company=company[:100],
+                industry="",  # Could be LLM-extracted later
+                score=conv_state.score,
+                must_have_gaps=[g for g in initial_gaps if "must" in g.lower() or "required" in g.lower()][:5],
+                nice_to_have_gaps=[g for g in initial_gaps if "nice" in g.lower() or "preferred" in g.lower()][:5],
+                recommendation=rec_category
+            )
+            profile.applications.append(app_record)
+            save_user_profile(user_id, profile)
+            logger.info(f"[PROFILE] Saved application: {job_title[:30]} ({rec_category})")
+        except Exception as e:
+            logger.warning(f"[PROFILE] Failed to save application: {e}")
+        
         # Split recommendation into sections for menu-based browsing
         import re
         sections = re.split(r'\n(?=## )', recommendation)
@@ -1083,7 +1250,7 @@ Please provide your full, detailed recommendation now."""
             conv_state.state = "complete"
     
     def _build_recommendation_menu(self, sections: List[str]) -> str:
-        """Build a numbered menu from recommendation sections."""
+        """Build a numbered menu from recommendation sections, plus profile option."""
         import re
         menu_items = []
         for i, section in enumerate(sections, 1):
@@ -1100,6 +1267,10 @@ Please provide your full, detailed recommendation now."""
             if len(title) > 50:
                 title = title[:47] + "..."
             menu_items.append(f"**{i}.** {title}")
+        
+        # Add profile as the last numbered item
+        profile_num = len(sections) + 1
+        menu_items.append(f"**{profile_num}.** 📊 My Profile (application history)")
         
         return "**Sections:**\n" + "\n".join(menu_items) + "\n\n_Type a number to view that section, or **'done'** when finished._"
     
@@ -1198,6 +1369,7 @@ Please provide your full, detailed recommendation now."""
         
         user_lower = user_input.lower().strip()
         sections = conv_state.recommendation_sections
+        profile_num = len(sections) + 1  # Profile is last item
         
         # User is done viewing - go to Brain for "what next"
         if user_lower == 'done':
@@ -1206,9 +1378,15 @@ Please provide your full, detailed recommendation now."""
             await self._handle_post_recommendation(ctx, conv_state, "I'm done reviewing the recommendation. What can I do next?", conversation_id)
             return
         
-        # User wants to see a specific section
+        # User wants to see a specific section or profile
         if user_lower.isdigit():
             section_num = int(user_lower)
+            
+            # Check if user selected profile
+            if section_num == profile_num:
+                await self._show_user_profile(ctx, conv_state, sections)
+                return
+            
             if 1 <= section_num <= len(sections):
                 section = sections[section_num - 1]
                 if len(section) > 3500:
@@ -1220,12 +1398,83 @@ Please provide your full, detailed recommendation now."""
                 logger.info(f"[VIEWING_RECOMMENDATION] Showed section {section_num}/{len(sections)}")
                 return
             else:
-                await emit_response(ctx, f"Please enter a number between 1 and {len(sections)}, or **'done'** when finished.", self.id)
+                await emit_response(ctx, f"Please enter a number between 1 and {profile_num}, or **'done'** when finished.", self.id)
                 return
         
         # User typed something else - show help
         menu = self._build_recommendation_menu(sections)
         await emit_response(ctx, f"Here's your recommendation for this job! {menu}", self.id)
+    
+    async def _show_user_profile(
+        self,
+        ctx: WorkflowContext,
+        conv_state: ConversationState,
+        sections: List[str]
+    ) -> None:
+        """Show user's application history and insights."""
+        user_id = get_conversation_id_from_context()
+        profile = get_user_profile(user_id)
+        
+        if not profile.applications:
+            profile_view = (
+                "##  My Profile\n\n"
+                "**No application history yet!**\n\n"
+                "Your profile will track:\n"
+                "- Jobs you've analyzed\n"
+                "- Match scores over time\n"
+                "- Common skill gaps\n"
+                "- Recommendation patterns\n\n"
+                "Keep analyzing jobs to build your profile!"
+            )
+        else:
+            apps = profile.applications
+            total = len(apps)
+            avg_score = sum(a.score for a in apps) / total if total > 0 else 0
+            
+            # Count recommendations
+            apply_count = sum(1 for a in apps if a.recommendation == "apply")
+            prep_count = sum(1 for a in apps if a.recommendation == "apply_with_prep")
+            alt_count = sum(1 for a in apps if a.recommendation == "consider_alternatives")
+            
+            # Find recurring gaps
+            all_gaps = []
+            for a in apps:
+                all_gaps.extend(a.must_have_gaps)
+                all_gaps.extend(a.nice_to_have_gaps)
+            gap_counts: Dict[str, int] = {}
+            for g in all_gaps:
+                gap_counts[g] = gap_counts.get(g, 0) + 1
+            top_gaps = sorted(gap_counts.items(), key=lambda x: -x[1])[:5]
+            
+            # Recent applications
+            recent = apps[-5:][::-1]  # Last 5, newest first
+            recent_lines = []
+            for a in recent:
+                emoji = "✅" if a.recommendation == "apply" else ("⚡" if a.recommendation == "apply_with_prep" else "🔄")
+                recent_lines.append(f"- {emoji} **{a.job_title[:40]}** ({a.score}%)")
+            
+            profile_view = (
+                "## 📊 My Profile\n\n"
+                f"**Applications Analyzed:** {total}\n"
+                f"**Average Match Score:** {avg_score:.0f}%\n\n"
+                "**Recommendation Breakdown:**\n"
+                f"- ✅ Apply: {apply_count}\n"
+                f"- ⚡ Apply with prep: {prep_count}\n"
+                f"- 🔄 Consider alternatives: {alt_count}\n\n"
+            )
+            
+            if top_gaps:
+                profile_view += "**Recurring Gaps to Address:**\n"
+                for gap, count in top_gaps:
+                    profile_view += f"- {gap[:50]} ({count}x)\n"
+                profile_view += "\n"
+            
+            profile_view += "**Recent Applications:**\n" + "\n".join(recent_lines)
+        
+        menu = self._build_recommendation_menu(sections)
+        response = f"{profile_view}\n\n---\n\n{menu}"
+        await emit_response(ctx, response, self.id)
+        logger.info(f"[PROFILE] Showed profile with {len(profile.applications)} applications")
 
 
 # ============================================================================
