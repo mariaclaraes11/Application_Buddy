@@ -83,6 +83,7 @@ Scoring:
 
 Output schema (JSON only, no markdown):
 {
+  "preliminary_score": <integer 0-100>,
   "matched_skills": [
     {"name": "<exact requirement>", "evidence": "<specific CV quote showing match>", "requirement_type": "must|nice"}
   ],
@@ -520,7 +521,7 @@ DON'T just summarize your resume. Instead:
 - Explain how you've solved that exact problem before
 - Show you understand THEIR challenges and can help
 
-## 🤝 Networking Strategy (Bypass the ATS!)
+##  Networking Strategy (Bypass the ATS!)
 
 Not all jobs are posted publicly. A personal connection can make a HUGE difference.
 

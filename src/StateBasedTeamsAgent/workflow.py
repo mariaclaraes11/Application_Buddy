@@ -167,6 +167,24 @@ def save_user_profile(user_id: str, profile: UserProfile) -> bool:
             logger.warning(f"[PROFILE] Save failed: {e}")
     return False
 
+def delete_user_profile(user_id: str) -> bool:
+    """Delete user profile from memory and blob storage."""
+    # Remove from memory
+    if user_id in _profile_store:
+        del _profile_store[user_id]
+        logger.info(f"[PROFILE] Removed {user_id} from memory cache")
+    
+    # Remove from blob storage
+    container = _get_blob_container()
+    if container:
+        try:
+            blob = container.get_blob_client(f"{user_id}.json")
+            blob.delete_blob()
+            logger.info(f"[PROFILE] Deleted profile blob for {user_id}")
+            return True
+        except Exception as e:
+            logger.info(f"[PROFILE] No blob to delete for {user_id}: {e}")
+    return False
 
 # ============================================================================
 # Conversation State Store (in-memory, keyed by conversation_id)
@@ -398,7 +416,24 @@ def should_run_qna(analysis_text: str) -> tuple[bool, int, list]:
                 raw_gaps = analysis_data.get('gaps', [])
                 gaps = [gap.get('name', str(gap)) for gap in raw_gaps]
                 must_have_gaps = [gap for gap in raw_gaps if gap.get('requirement_type') == 'must']
+                matched_skills = analysis_data.get('matched_skills', [])
+                
+                # Get score from JSON, or calculate fallback if missing
                 score = analysis_data.get('preliminary_score', 0)
+                if score == 0 and (matched_skills or raw_gaps):
+                    # Fallback: calculate score from matched vs gaps
+                    must_matched = len([s for s in matched_skills if s.get('requirement_type') == 'must'])
+                    nice_matched = len([s for s in matched_skills if s.get('requirement_type') == 'nice'])
+                    must_gaps = len([g for g in raw_gaps if g.get('requirement_type') == 'must'])
+                    nice_gaps = len([g for g in raw_gaps if g.get('requirement_type') == 'nice'])
+                    
+                    total_must = must_matched + must_gaps
+                    total_nice = nice_matched + nice_gaps
+                    
+                    must_ratio = must_matched / max(total_must, 1)
+                    nice_ratio = nice_matched / max(total_nice, 1)
+                    score = round(100 * (0.7 * must_ratio + 0.3 * nice_ratio))
+                    logger.info(f"[SCORE] Calculated fallback score: {score} (must: {must_matched}/{total_must}, nice: {nice_matched}/{total_nice})")
                 
                 # Add mandatory gaps
                 mandatory = ["Work authorization/location eligibility", "Role understanding and alignment with career goals", "Company/culture research and fit"]
@@ -699,7 +734,6 @@ class BrainBasedWorkflowExecutor(Executor):
 - Current: `{conv_state.state}`
 - CV stored: {len(conv_state.cv_text) if conv_state.cv_text else 0} chars
 - Job stored: {len(conv_state.job_text) if conv_state.job_text else 0} chars
-- Score: {conv_state.score}
 - Gaps: {len(conv_state.gaps)}
 - Q&A history: {len(conv_state.qna_history)} turns
 
@@ -732,6 +766,17 @@ class BrainBasedWorkflowExecutor(Executor):
             await emit_response(
                 ctx,
                 f"🔄 **Session reset!** Let's start fresh.\n\n_({session_mode} session)_\n\nHey! 👋 Welcome to Application Buddy! I help you evaluate if a job is right for you. Share your CV and a job description, and I'll analyze your fit.\n\nWhat would you like to do?",
+                self.id
+            )
+            return
+        
+        # Check for reset profile command - clears application history
+        if user_input.lower().strip() in ['reset profile', 'clear profile', 'delete profile']:
+            delete_user_profile(conversation_id)
+            await emit_response(
+                ctx,
+                "🗑️ **Profile cleared!** Your application history has been deleted.\n\n"
+                "Your current conversation is still active. Type **'reset'** if you also want to start a new conversation.",
                 self.id
             )
             return
@@ -994,8 +1039,6 @@ CANDIDATE'S BACKGROUND (from their CV):
 JOB THEY'RE EXPLORING:
 {job_summary}
 
-MATCH SCORE: {score}%
-
 YOUR APPROACH:
 - You KNOW their background - reference it naturally, don't ask them to repeat it
 - Have a genuine conversation about their experience and interests
@@ -1012,7 +1055,7 @@ Start with something specific from their CV that caught your attention, then exp
                     
                     # ONE COMBINED MESSAGE - avoids 400 error from multiple emit_response calls
                     combined_response = (
-                        f" **Analysis Complete!** Score: **{score}%** | Areas to explore: **{len(gaps)}**\n\n"
+                        f" **Analysis Complete!** Areas to explore: **{len(gaps)}**\n\n"
                         f"---\n\n"
                         f" **[Q&A Agent]** {first_question}\n\n"
                         f"*(Type 'done' anytime for your recommendation)*"
@@ -1177,20 +1220,55 @@ Please provide your full, detailed recommendation now."""
             else:
                 rec_category = "consider_alternatives"
             
-            # Extract job title and company from job_text (simple heuristics)
-            job_lines = (conv_state.job_text or "").split('\n')[:10]
+            # Extract job title and company from job_text (improved heuristics)
+            job_lines = (conv_state.job_text or "").split('\n')[:30]
             job_title = "Unknown Position"
             company = "Unknown Company"
+            
+            # Skip patterns - lines that are NOT job titles
+            skip_patterns = ['logo', 'compartilhar', 'exibir', 'salvar', 'candidatar', 
+                           'linkedin', 'about', 'http', 'www.', '@', 'posted', 'apply',
+                           'híbrido', 'remoto', 'presencial', 'estágio', 'job type',
+                           'location', 'clicaram', 'pessoas', 'opções', 'correspondência']
+            
+            # Job title patterns - lines that ARE likely job titles
+            title_keywords = ['engineer', 'developer', 'manager', 'analyst', 'designer',
+                            'intern', 'specialist', 'coordinator', 'director', 'lead',
+                            'architect', 'scientist', 'consultant', 'associate', 'senior',
+                            'junior', 'sre', 'devops', 'software', 'data', 'product']
+            
             for line in job_lines:
                 line_clean = line.strip()
-                if not job_title or job_title == "Unknown Position":
-                    # First non-empty line often is title
-                    if line_clean and len(line_clean) < 100:
+                line_lower = line_clean.lower()
+                
+                # Skip empty, too short, or too long lines
+                if not line_clean or len(line_clean) < 5 or len(line_clean) > 80:
+                    continue
+                
+                # Skip lines matching skip patterns
+                if any(skip in line_lower for skip in skip_patterns):
+                    continue
+                
+                # Look for job title (contains title keywords)
+                if job_title == "Unknown Position":
+                    if any(kw in line_lower for kw in title_keywords):
                         job_title = line_clean
                         continue
-                if 'company' in line.lower() or 'at ' in line.lower():
-                    company = line_clean
-                    break
+                
+                # Look for company name (after we have title)
+                if job_title != "Unknown Position" and company == "Unknown Company":
+                    # Company often follows title, or has patterns like "at Company" or "Company ·"
+                    if '·' in line_clean or ' at ' in line_lower or 'about ' in line_lower:
+                        # Extract company name
+                        if '·' in line_clean:
+                            company = line_clean.split('·')[0].strip()
+                        elif ' at ' in line_lower:
+                            company = line_clean.split(' at ')[-1].strip()
+                        break
+                    # Or it's just the next reasonable line
+                    elif len(line_clean) < 50 and not any(skip in line_lower for skip in skip_patterns):
+                        company = line_clean
+                        break
             
             app_record = ApplicationRecord(
                 date=datetime.now(tz=timezone.utc).isoformat(),
