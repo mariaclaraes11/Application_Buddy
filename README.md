@@ -1,181 +1,317 @@
-# Microsoft Foundry `azd` bicep starter kit (basic)
+# Application Buddy 🎯
 
-This Azure Developer CLI (azd) template provides a streamlined way to provision and deploy Microsoft Foundry resources for building and running AI agents. It includes infrastructure-as-code definitions and sample application code to help you quickly get started with Microsoft Foundry's agent capabilities, including model deployments, workspace configuration, and supporting services like storage and container hosting.
+**Stop mass-applying. Start strategically applying.**
 
-This template does **not** include agent code or application code. You will find samples in other repositories such as [foundry-samples](https://github.com/azure-ai-foundry/foundry-samples/tree/main/samples/microsoft/hosted-agents)
+Application Buddy is an AI-powered job application assistant that helps you make smarter decisions about which jobs to apply for. Instead of the "spray and pray" approach of mass applications, Application Buddy analyzes your CV against each job posting and tells you honestly whether it's worth your time.
 
-[Features](#features) • [Getting Started](#getting-started) • [Guidance](#guidance)
+## The Problem with Mass Applications
 
-This template, the application code and configuration it contains, has been built to showcase Microsoft Azure specific services and tools. We strongly advise our customers not to make this code part of their production environments without implementing or enabling additional security features.
+Modern job seekers face a paradox:
+- Job platforms make it easy to apply with one click
+- Applicant Tracking Systems (ATS) filter out most applications automatically  
+- Mass-applying leads to low response rates and wasted effort
+- You end up applying for jobs you're not qualified for, missing jobs you'd be great at
 
-With any AI solutions you create using these templates, you are responsible for assessing all associated risks, and for complying with all applicable laws and safety standards. Learn more in the transparency documents for [Agent Service](https://learn.microsoft.com/en-us/azure/ai-foundry/responsible-ai/agents/transparency-note) and [Agent Framework](https://github.com/microsoft/agent-framework/blob/main/TRANSPARENCY_FAQ.md).
+**The result:** Hours spent on applications that never get seen, burnout, and no strategic improvement in your job search.
 
-## Features
+## How Application Buddy Helps
 
-This project framework provides the following features:
+Application Buddy acts as your personal job search strategist:
 
-* **Microsoft Foundry Project**: Complete setup of Microsoft Foundry workspace with project configuration
-* **Foundry Model Deployments**: Automatic deployment of AI models for agent capabilities
-* **Azure Container Registry**: Container image storage and management for agent deployments
-* **Managed Identity**: Built-in Azure Managed Identity for keyless authentication between services
+1. **Analyzes fit** - Compares your CV against job requirements
+2. **Identifies gaps** - Shows exactly which skills/experiences you're missing
+3. **Asks clarifying questions** - Discovers hidden qualifications not on your CV
+4. **Gives honest recommendations** - Tells you whether to apply, prepare first, or skip
+5. **Tracks your profile** - Builds a pattern of your applications to give better advice over time
 
-### Architecture Diagram
+---
 
-This starter kit will provision the bare minimum for your hosted agent to work (if `ENABLE_HOSTED_AGENTS=true`).
+## 🏗️ Architecture
 
-| Resource | Description |
-|----------|-------------|
-| [Microsoft Foundry](https://learn.microsoft.com/azure/ai-foundry) | Provides a collaborative workspace for AI development with access to models, data, and compute resources |
-| [Azure Container Registry](https://learn.microsoft.com/azure/container-registry/) | Stores and manages container images for secure deployment |
-| [Application Insights](https://learn.microsoft.com/azure/azure-monitor/app/app-insights-overview) | *Optional* - Provides application performance monitoring, logging, and telemetry for debugging and optimization |
-| [Log Analytics Workspace](https://learn.microsoft.com/azure/azure-monitor/logs/log-analytics-workspace-overview) | *Optional* - Collects and analyzes telemetry data for monitoring and troubleshooting |
+### Agent Orchestration
 
-Those resources will be used by the [`azd ai agent` extension](https://aka.ms/azdaiagent/docs) when building and deploying agents:
+Application Buddy uses a **state-based multi-agent workflow** with 5 specialized agents:
 
-```mermaid
-graph TB
-    Dev[👤 Agent Developer]
-    Dev -->|1. build agent<br/>container code| ACR
-    Dev -->|2. deploy agent| AIFP
-    Dev -->|4. query agent| AIFP
-
-    subgraph "Azure Resource Group"
-        subgraph "Azure AI Foundry Account"
-            AIFP[Azure AI Foundry<br/>Project]
-            Models[Model Deployments]
-        end
-        
-        subgraph ACR[Azure Container Registry]
-            ACC[Agent code container]
-        end
-    end
-    
-    %% Connections
-    AIFP --> Models
-    ACR -->|3. AcrPull| AIFP
-    
-    %% Styling
-    classDef primary fill:#0078d4,stroke:#005a9e,stroke-width:2px,color:#fff
-    classDef secondary fill:#00bcf2,stroke:#0099bc,stroke-width:2px,color:#fff
-    
-    class AIFP,Models primary
-    class ACR secondary
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        CONVERSATION FLOW                            │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│   User                                                              │
+│     │                                                               │
+│     ▼                                                               │
+│  ┌──────────┐                                                       │
+│  │  BRAIN   │  ← Conversational interface                           │
+│  │  Agent   │    Collects CV + Job Description                      │
+│  └────┬─────┘                                                       │
+│       │ Both collected                                              │
+│       ▼                                                             │
+│  ┌──────────┐                                                       │
+│  │ ANALYZER │  ← Deep CV vs Job analysis                            │
+│  │  Agent   │    Extracts skills, gaps, score                       │
+│  └────┬─────┘                                                       │
+│       │                                                             │
+│       ▼                                                             │
+│  ┌──────────┐     ┌────────────┐                                    │
+│  │   Q&A    │ ←──►│ VALIDATION │  ← Tracks remaining gaps           │
+│  │  Agent   │     │   Agent    │    Detects when user answers gap   │
+│  └────┬─────┘     └────────────┘                                    │
+│       │ User says "done" or all gaps addressed                      │
+│       ▼                                                             │
+│  ┌──────────────┐                                                   │
+│  │ RECOMMENDER  │  ← Final recommendation                           │
+│  │    Agent     │    Based on updated gap analysis                  │
+│  └──────────────┘                                                   │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-The template is parametrized so that it can be configured with additional resources depending on the agent requirements:
+### State Machine
 
-* deploy AI models by setting `AI_PROJECT_DEPLOYMENTS` with a list of model deployment configs,
-* provision additional resources (Azure AI Search, Bing Search) by setting `AI_PROJECT_DEPENDENT_RESOURCES`,
-* enable monitoring by setting `ENABLE_MONITORING=true` (default on),
-* provision connections by setting `AI_PROJECT_CONNECTIONS` with a list of connection configs.
-
-## Getting Started
-
-Note: this repository is not meant to be cloned, but to be consumed as a template in your own project:
-
-```bash
-azd init --template Azure-Samples/ai-foundry-starter-basic
 ```
+COLLECTING → ANALYZING → Q&A → VIEWING_RECOMMENDATION → COMPLETE
+     ↑                    │
+     └────────────────────┘  (user can analyze another job)
+```
+
+| State | Description |
+|-------|-------------|
+| `collecting` | Brain agent has natural conversation, collects CV and job posting |
+| `analyzing` | Analyzer agent performs deep comparison, extracts structured data |
+| `qna` | Q&A agent asks about gaps; Validation agent tracks which gaps are addressed |
+| `viewing_recommendation` | User browses recommendation sections via numbered menu |
+| `complete` | Session finished, can start new analysis |
+
+### The Validation Agent
+
+The **Validation Agent** is a key innovation that makes the Q&A phase intelligent:
+
+- Receives the original gap list from the Analyzer
+- After each user response, evaluates: "Did this address any gaps?"
+- Updates the gap list in real-time
+- Enables accurate final recommendations based on actual remaining gaps
+
+```python
+# Validation Agent Output Schema
+{
+    "addressed_gap": "Docker experience",           # Which gap was filled
+    "remaining_must_have_gaps": [...],              # Updated list
+    "remaining_nice_to_have_gaps": [...],           # Updated list  
+    "user_answer_summary": "5 years Docker in prod" # What user said
+}
+```
+
+---
+
+## 🖥️ User Interface
+
+### Streamlit UI Pattern
+
+The Streamlit UI (`devui/streamlit_app.py`) provides:
+
+- **Chat interface** - Natural conversation with the agent
+- **PDF upload** - Attach your CV directly (sidebar)
+- **Quick reply buttons** - Contextual buttons like "Go" and "Done" appear when relevant
+- **Per-message feedback** - Rate each response (saved to Application Insights)
+- **Reset controls** - New conversation / Reset profile buttons
+
+### How to Upload Your CV
+
+1. Click the **sidebar** (left panel) or look for "📎 Attach CV"
+2. Click **"Browse files"** and select your PDF
+3. You'll see a confirmation: "✓ filename.pdf - Will be sent with your next message"
+4. Type any message (e.g., "hi" or "here's my CV") and send
+5. The CV will be automatically attached and parsed
+
+### Quick Reply Buttons
+
+The UI detects conversation context and shows helpful buttons:
+
+| Context | Button |
+|---------|--------|
+| "Just say 'go' and I'll dive in" | 🚀 **Go** |
+| "Type 'done' when finished" | ✓ **Done** |
+
+### Feedback System
+
+After each assistant message, you'll see a collapsible "How did I do?" section:
+- ⭐ Star rating (1-5)
+- Optional comment
+- Click "Send" to submit
+
+Feedback is sent to **Azure Application Insights** for analysis.
+
+---
+
+## 📊 Monitoring & Logs
+
+### Application Insights
+
+All telemetry flows to Application Insights resource: `appi-d2zwldhwlzgkg`
+
+#### Viewing Feedback
+
+1. Go to [Azure Portal](https://portal.azure.com) → Application Insights → `appi-d2zwldhwlzgkg`
+2. Click **Logs** in the left sidebar
+3. Run this query:
+
+```kusto
+customEvents
+| where name == "UserFeedback"
+| extend rating = toint(customDimensions.rating)
+| extend comment = tostring(customDimensions.comment)
+| project timestamp, rating, comment
+| order by timestamp desc
+```
+
+#### Useful Queries
+
+**Average rating over time:**
+```kusto
+customEvents
+| where name == "UserFeedback"
+| extend rating = toint(customDimensions.rating)
+| summarize avg(rating), count() by bin(timestamp, 1d)
+| render timechart
+```
+
+**Low ratings with comments (for improvement):**
+```kusto
+customEvents
+| where name == "UserFeedback"
+| extend rating = toint(customDimensions.rating)
+| extend comment = tostring(customDimensions.comment)
+| where rating <= 2 and comment != ""
+| project timestamp, rating, comment
+```
+
+### Agent Logs
+
+The deployed agent logs to the Foundry workspace. To view:
+
+1. Go to [Azure AI Foundry](https://ai.azure.com)
+2. Navigate to your project: `ai-project-application_buddy_env`
+3. Go to **Agents** → `StateBasedTeamsAgent`
+4. Click on a deployment version to see logs
+
+---
+
+## �� Getting Started
 
 ### Prerequisites
 
-* Install [azd](https://aka.ms/install-azd)
-  * Windows: `winget install microsoft.azd`
-  * Linux: `curl -fsSL https://aka.ms/install-azd.sh | bash`
-  * MacOS: `brew tap azure/azd && brew install azd`
+- [Azure CLI](https://docs.microsoft.com/cli/azure/install-azure-cli)
+- [Azure Developer CLI (azd)](https://aka.ms/install-azd)
+- Python 3.11+
+- An Azure subscription
 
-### Quickstart
+### Local Development
 
-1. Bring down the template code:
+1. **Clone and setup:**
+   ```bash
+   git clone <repo-url>
+   cd Application_Buddy
+   python -m venv venv
+   source venv/bin/activate  # or venv\Scripts\activate on Windows
+   pip install -r requirements.txt
+   ```
 
-    ```shell
-    azd init --template Azure-Samples/ai-foundry-starter-basic
-    ```
+2. **Login to Azure:**
+   ```bash
+   az login
+   azd auth login
+   ```
 
-    This will perform a git clone
+3. **Provision infrastructure:**
+   ```bash
+   azd provision
+   ```
 
-2. Sign into your Azure account:
+4. **Deploy the agent:**
+   ```bash
+   azd deploy
+   ```
 
-    ```shell
-    azd auth login
-    ```
+5. **Run the Streamlit UI:**
+   ```bash
+   cd devui
+   streamlit run streamlit_app.py
+   ```
 
-3. Download a sample agent from GitHub:
+6. **Open browser:** http://localhost:8501
 
-    ```shell
-    azd ai agent init -m <repo-path-to-agent.yaml>
-    ```
+### Environment Variables
 
-You'll find agent samples in the [`foundry-samples` repo](https://github.com/azure-ai-foundry/foundry-samples/tree/main/samples/microsoft/python/getting-started-agents/hosted-agents).
+| Variable | Description |
+|----------|-------------|
+| `AZURE_OPENAI_ENDPOINT` | Azure OpenAI endpoint |
+| `AZURE_OPENAI_DEPLOYMENT` | Model deployment name (e.g., gpt-4o) |
+| `AZURE_STORAGE_ACCOUNT_NAME` | Storage account for user profiles (optional) |
+| `APPLICATIONINSIGHTS_CONNECTION_STRING` | App Insights for telemetry |
 
-## Guidance
+---
 
-### Region Availability
+## 📁 Project Structure
 
-This template does not use specific models. The model deployments are a parameter of the template. Each model may not be available in all Azure regions. Check for [up-to-date region availability of Microsoft Foundry](https://learn.microsoft.com/en-us/azure/ai-foundry/reference/region-support) and in particular the [Agent Service](https://learn.microsoft.com/en-us/azure/ai-foundry/agents/concepts/model-region-support?tabs=global-standard).
+```
+Application_Buddy/
+├── azure.yaml                 # azd configuration
+├── infra/                     # Bicep infrastructure
+│   ├── main.bicep
+│   └── core/                  # Modular infrastructure
+├── src/
+│   └── StateBasedTeamsAgent/  # Main agent code
+│       ├── agent.yaml         # Agent manifest
+│       ├── workflow.py        # Multi-agent orchestration
+│       ├── agent_definitions.py # Agent prompts & schemas
+│       ├── config.py          # Configuration
+│       └── main.py            # Entry point
+├── devui/
+│   └── streamlit_app.py       # Local development UI
+└── text_examples/             # Sample CVs and job descriptions
+```
 
-## Resource Clean-up
+---
 
-To prevent incurring unnecessary charges, it's important to clean up your Azure resources after completing your work with the application.
+## 🔧 Commands Reference
 
-- **When to Clean Up:**
-  - After you have finished testing or demonstrating the application.
-  - If the application is no longer needed or you have transitioned to a different project or environment.
-  - When you have completed development and are ready to decommission the application.
+| Command | Description |
+|---------|-------------|
+| `azd provision` | Create/update Azure infrastructure |
+| `azd deploy` | Deploy agent to Azure AI Foundry |
+| `azd down` | Delete all Azure resources |
+| `streamlit run devui/streamlit_app.py` | Run local UI |
 
-- **Deleting Resources:**
-  To delete all associated resources and shut down the application, execute the following command:
-  
-    ```bash
-    azd down
-    ```
+### In-App Commands
 
-    Please note that this process may take up to 20 minutes to complete.
+| Command | Description |
+|---------|-------------|
+| `reset` | Start a new conversation |
+| `reset profile` | Clear your application history |
+| `done` | Skip remaining Q&A and get recommendation |
+| `profile` | View your application history and patterns |
+| `1`, `2`, `3`... | Select menu items in recommendation view |
 
-⚠️ Alternatively, you can delete the resource group directly from the Azure Portal to clean up resources.
+---
 
-### Costs
+## 🛡️ Security
 
-Pricing varies per region and usage, so it isn't possible to predict exact costs for your usage.
-The majority of the Azure resources used in this infrastructure are on usage-based pricing tiers.
+- **Managed Identity** - Keyless authentication between Azure services
+- **No secrets in code** - All credentials via Azure Identity
+- **Data isolation** - User profiles keyed by conversation ID
 
-You can try the [Azure pricing calculator](https://azure.microsoft.com/pricing/calculator) for the resources deployed in this template.
+---
 
-* **Microsoft Foundry**: Standard tier. [Pricing](https://azure.microsoft.com/pricing/details/ai-foundry/)
-* **Azure AI Services**: S0 tier, defaults to gpt-4o-mini. Pricing is based on token count. [Pricing](https://azure.microsoft.com/pricing/details/cognitive-services/)
-* **Azure Container Registry**: Basic SKU. Price is per day and on storage. [Pricing](https://azure.microsoft.com/en-us/pricing/details/container-registry/)
-* **Azure Storage Account**: Standard tier, LRS. Pricing is based on storage and operations. [Pricing](https://azure.microsoft.com/pricing/details/storage/blobs/)
-* **Log analytics**: Pay-as-you-go tier. Costs based on data ingested. [Pricing](https://azure.microsoft.com/pricing/details/monitor/)
-* **Azure AI Search**: Basic tier, LRS. Price is per day and based on transactions. [Pricing](https://azure.microsoft.com/en-us/pricing/details/search/)
-* **Grounding with Bing Search**: G1 tier. Costs based on transactions. [Pricing](https://www.microsoft.com/en-us/bing/apis/grounding-pricing)
+## 📄 License
 
-⚠️ To avoid unnecessary costs, remember to take down your app if it's no longer in use, either by deleting the resource group in the Portal or running `azd down`.
+See [LICENSE.md](docs/azd-files/LICENSE.md)
 
-### Security guidelines
+---
 
-This template also uses [Managed Identity](https://learn.microsoft.com/entra/identity/managed-identities-azure-resources/overview) for local development and deployment.
+## 🙏 Acknowledgments
 
-To ensure continued best practices in your own repository, we recommend that anyone creating solutions based on our templates ensure that the [Github secret scanning](https://docs.github.com/code-security/secret-scanning/about-secret-scanning) setting is enabled.
-
-You may want to consider additional security measures, such as:
-
-- Enabling Microsoft Defender for Cloud to [secure your Azure resources](https://learn.microsoft.com/azure/defender-for-cloud/).
-- Protecting the Azure Container Apps instance with a [firewall](https://learn.microsoft.com/azure/container-apps/waf-app-gateway) and/or [Virtual Network](https://learn.microsoft.com/azure/container-apps/networking?tabs=workload-profiles-env%2Cazure-cli).
-
-> **Important Security Notice** <br/>
-This template, the application code and configuration it contains, has been built to showcase Microsoft Azure specific services and tools. We strongly advise our customers not to make this code part of their production environments without implementing or enabling additional security features.  <br/><br/>
-For a more comprehensive list of best practices and security recommendations for Intelligent Applications, [visit our official documentation](https://learn.microsoft.com/en-us/azure/ai-foundry/).
-
-## Additional Disclaimers
-
-**Trademarks** This project may contain trademarks or logos for projects, products, or services. Authorized use of Microsoft trademarks or logos is subject to and must follow [Microsoft’s Trademark & Brand Guidelines](https://www.microsoft.com/en-us/legal/intellectualproperty/trademarks/usage/general). Use of Microsoft trademarks or logos in modified versions of this project must not cause confusion or imply Microsoft sponsorship. Any use of third-party trademarks or logos are subject to those third-party’s policies.
-
-To the extent that the Software includes components or code used in or derived from Microsoft products or services, including without limitation Microsoft Azure Services (collectively, “Microsoft Products and Services”), you must also comply with the Product Terms applicable to such Microsoft Products and Services. You acknowledge and agree that the license governing the Software does not grant you a license or other right to use Microsoft Products and Services. Nothing in the license or this ReadMe file will serve to supersede, amend, terminate or modify any terms in the Product Terms for any Microsoft Products and Services.
-
-You must also comply with all domestic and international export laws and regulations that apply to the Software, which include restrictions on destinations, end users, and end use. For further information on export restrictions, visit <https://aka.ms/exporting>.
-
-You acknowledge that the Software and Microsoft Products and Services (1) are not designed, intended or made available as a medical device(s), and (2) are not designed or intended to be a substitute for professional medical advice, diagnosis, treatment, or judgment and should not be used to replace or as a substitute for professional medical advice, diagnosis, treatment, or judgment. Customer is solely responsible for displaying and/or obtaining appropriate consents, warnings, disclaimers, and acknowledgements to end users of Customer’s implementation of the Online Services.
-
-You acknowledge the Software is not subject to SOC 1 and SOC 2 compliance audits. No Microsoft technology, nor any of its component technologies, including the Software, is intended or made available as a substitute for the professional advice, opinion, or judgement of a certified financial services professional. Do not use the Software to replace, substitute, or provide professional financial advice or judgment.  
-
-BY ACCESSING OR USING THE SOFTWARE, YOU ACKNOWLEDGE THAT THE SOFTWARE IS NOT DESIGNED OR INTENDED TO SUPPORT ANY USE IN WHICH A SERVICE INTERRUPTION, DEFECT, ERROR, OR OTHER FAILURE OF THE SOFTWARE COULD RESULT IN THE DEATH OR SERIOUS BODILY INJURY OF ANY PERSON OR IN PHYSICAL OR ENVIRONMENTAL DAMAGE (COLLECTIVELY, “HIGH-RISK USE”), AND THAT YOU WILL ENSURE THAT, IN THE EVENT OF ANY INTERRUPTION, DEFECT, ERROR, OR OTHER FAILURE OF THE SOFTWARE, THE SAFETY OF PEOPLE, PROPERTY, AND THE ENVIRONMENT ARE NOT REDUCED BELOW A LEVEL THAT IS REASONABLY, APPROPRIATE, AND LEGAL, WHETHER IN GENERAL OR IN A SPECIFIC INDUSTRY. BY ACCESSING THE SOFTWARE, YOU FURTHER ACKNOWLEDGE THAT YOUR HIGH-RISK USE OF THE SOFTWARE IS AT YOUR OWN RISK.
+Built with:
+- [Azure AI Foundry](https://ai.azure.com)
+- [Agent Framework](https://github.com/microsoft/agent-framework)
+- [Streamlit](https://streamlit.io)
+- [Azure Developer CLI](https://aka.ms/azd)
