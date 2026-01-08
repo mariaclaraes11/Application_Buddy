@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 # Configuration
 PROJECT_ENDPOINT = "https://ai-account-d2zwldhwlzgkg.services.ai.azure.com/api/projects/ai-project-application_buddy_env"
 AGENT_NAME = "StateBasedTeamsAgent"
+APPINSIGHTS_CONNECTION_STRING = "InstrumentationKey=71316b67-c79b-4f9d-bbde-16abece892fa;IngestionEndpoint=https://northcentralus-0.in.applicationinsights.azure.com/;LiveEndpoint=https://northcentralus.livediagnostics.monitor.azure.com/;ApplicationId=a0a2f9d5-e5e9-4c10-ae58-e6a2b2e00d74"
 
 st.set_page_config(page_title="Application Buddy", page_icon="💼", layout="wide")
 
@@ -31,30 +32,39 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 def save_feedback(rating: int, comment: str, message_index: int, message_content: str) -> bool:
-    """Save feedback for a specific message to a local JSON file."""
+    """Save feedback to Application Insights via direct HTTP POST."""
     try:
-        feedback_file = "feedback_log.json"
+        import requests
         
-        # Load existing feedback
-        feedback_list = []
-        if os.path.exists(feedback_file):
-            with open(feedback_file, "r") as f:
-                feedback_list = json.load(f)
+        # Extract instrumentation key from connection string
+        ikey = "71316b67-c79b-4f9d-bbde-16abece892fa"
+        ingestion_endpoint = "https://northcentralus-0.in.applicationinsights.azure.com/v2/track"
         
-        # Add new feedback
-        feedback_list.append({
-            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
-            "rating": rating,
-            "comment": comment,
-            "message_index": message_index,
-            "message_preview": message_content[:200] if message_content else ""
-        })
+        payload = [{
+            "name": "AppEvents",
+            "time": datetime.now(tz=timezone.utc).isoformat(),
+            "iKey": ikey,
+            "data": {
+                "baseType": "EventData",
+                "baseData": {
+                    "name": "UserFeedback",
+                    "properties": {
+                        "rating": str(rating),
+                        "comment": comment[:500] if comment else "",
+                        "message_index": str(message_index),
+                        "message_preview": message_content[:200] if message_content else ""
+                    }
+                }
+            }
+        }]
         
-        # Save back
-        with open(feedback_file, "w") as f:
-            json.dump(feedback_list, f, indent=2)
+        response = requests.post(
+            ingestion_endpoint,
+            json=payload,
+            headers={"Content-Type": "application/json"}
+        )
         
-        return True
+        return response.status_code in [200, 202]
     except Exception as e:
         st.error(f"Failed to save feedback: {e}")
         return False
