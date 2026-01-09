@@ -241,6 +241,66 @@ with st.sidebar:
             st.session_state.pending_file = None
             st.session_state.uploader_key += 1
             st.rerun()
+    
+    # Saved Jobs section
+    st.markdown("---")
+    st.markdown("### 💼 Saved Jobs")
+    
+    # Initialize saved jobs in session state
+    if "saved_jobs" not in st.session_state:
+        st.session_state.saved_jobs = []
+    
+    # Sync button
+    if st.button("🔄 Sync from LinkedIn", help="Opens browser to scrape your saved jobs"):
+        with st.spinner("Opening LinkedIn..."):
+            try:
+                from linkedin_savedjobs import scrape_jobs_sync
+                jobs = scrape_jobs_sync(max_jobs=20)
+                st.session_state.saved_jobs = jobs
+                st.success(f"Synced {len(jobs)} jobs!")
+            except Exception as e:
+                st.error(f"Error: {e}")
+    
+    # Display job buttons
+    if st.session_state.saved_jobs:
+        for i, job in enumerate(st.session_state.saved_jobs):
+            col1, col2 = st.columns([4, 1])
+            with col1:
+                if st.button(
+                    f"🏢 {job['company']}\n{job['title'][:30]}...",
+                    key=f"job_{i}",
+                    use_container_width=True
+                ):
+                    # Send job to chat
+                    job_text = f"**{job['title']}** at **{job['company']}**\n\n{job['description']}"
+                    st.session_state.pending_job = job_text
+                    st.rerun()
+    else:
+        st.caption("Click Sync to load your saved jobs")
+
+# Check if a job was selected from sidebar
+if "pending_job" in st.session_state and st.session_state.pending_job:
+    job_text = st.session_state.pending_job
+    st.session_state.pending_job = None
+    
+    # Send to agent
+    st.session_state.messages.append({"role": "user", "content": f"📋 Job from LinkedIn:\n\n{job_text[:500]}..."})
+    with st.chat_message("user"):
+        st.markdown(f"📋 Job loaded from LinkedIn")
+    
+    with st.chat_message("assistant"):
+        with st.spinner("..."):
+            try:
+                response = openai_client.responses.create(
+                    input=[{"type": "message", "role": "user", "content": job_text}],
+                    extra_body={"agent": {"name": agent.name, "type": "agent_reference"}},
+                )
+                reply = response.output_text
+                st.markdown(reply)
+                st.session_state.messages.append({"role": "assistant", "content": reply})
+            except Exception as e:
+                st.error(str(e))
+    st.rerun()
 
 # Chat input
 prompt = st.chat_input("Type a message...")

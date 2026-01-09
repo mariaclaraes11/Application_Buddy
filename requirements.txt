@@ -16,6 +16,9 @@ pydantic-settings
 # Original dependencies  
 openai
 
+# LinkedIn scraper
+playwright
+
 # Agent SDK dependencies
 aiohttp
 microsoft-agents-hosting-aiohttp
