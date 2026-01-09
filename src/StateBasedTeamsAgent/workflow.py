@@ -211,6 +211,7 @@ class ConversationState:
     qna_thread: Any = None    # Thread for Q&A agent memory
     validation_ready: bool = False  # Set by validation agent when all gaps addressed
     recommendation_sections: List[str] = field(default_factory=list)  # Sections for menu-based browsing
+    scam_warning: str = ""  # Scam detection warning message
 
 
 def get_conversation_state(conv_id: str) -> ConversationState:
@@ -1006,6 +1007,27 @@ class BrainBasedWorkflowExecutor(Executor):
             conv_state.initial_gaps = gaps.copy()  # Save original gaps for recommendation
             conv_state.score = score
             
+            # Extract scam analysis if present
+            scam_warning = ""
+            try:
+                import json
+                import re
+                # Try to find JSON in the analysis
+                json_match = re.search(r'\{[\s\S]*\}', analysis_text)
+                if json_match:
+                    analysis_json = json.loads(json_match.group())
+                    scam_data = analysis_json.get("scam_analysis", {})
+                    red_flags = scam_data.get("red_flags", [])
+                    legitimacy = scam_data.get("legitimacy_score", 100)
+                    
+                    if red_flags or legitimacy < 60:
+                        flags_text = ", ".join(red_flags[:3]) if red_flags else "suspicious indicators detected"
+                        scam_warning = f"\n\n⚠️ **FLAGGED:** I've detected potential concerns with this job posting: *{flags_text}*. Be cautious before applying.\n"
+            except:
+                pass  # If parsing fails, continue without scam warning
+            
+            conv_state.scam_warning = scam_warning  # Store for later use
+            
             logger.info(f"[ANALYZER] Score: {score}, Needs Q&A: {needs_qna}, Gaps: {len(gaps)}")
         
         except Exception as e:
@@ -1054,9 +1076,11 @@ Start with something specific from their CV that caught your attention, then exp
                     conv_state.qna_history.append(f"Advisor: {first_question}")
                     
                     # ONE COMBINED MESSAGE - avoids 400 error from multiple emit_response calls
+                    # Include scam warning if detected
                     combined_response = (
-                        f" **Analysis Complete!** Areas to explore: **{len(gaps)}**\n\n"
-                        f"---\n\n"
+                        f" **Analysis Complete!** Areas to explore: **{len(gaps)}**"
+                        f"{conv_state.scam_warning}"
+                        f"\n\n---\n\n"
                         f" **[Q&A Agent]** {first_question}\n\n"
                         f"*(Type 'done' anytime for your recommendation)*"
                     )
@@ -1072,6 +1096,9 @@ Start with something specific from their CV that caught your attention, then exp
                 # High score - skip Q&A, go straight to recommendation
                 logger.info("High score - skipping Q&A, generating recommendation...")
                 conv_state.state = "complete"
+                # If there's a scam warning, show it before recommendation
+                if conv_state.scam_warning:
+                    await emit_response(ctx, conv_state.scam_warning.strip(), self.id)
                 # NOTE: Don't emit here - let _generate_recommendation be the only response
                 await self._generate_recommendation(ctx, conv_state, "")
                 
@@ -1495,7 +1522,7 @@ Please provide your full, detailed recommendation now."""
         
         if not profile.applications:
             profile_view = (
-                "##  My Profile\n\n"
+                "## 📊 My Profile\n\n"
                 "**No application history yet!**\n\n"
                 "Your profile will track:\n"
                 "- Jobs you've analyzed\n"
@@ -1515,22 +1542,31 @@ Please provide your full, detailed recommendation now."""
             alt_count = sum(1 for a in apps if a.recommendation == "consider_alternatives")
             
             # Find recurring gaps
-            all_gaps = []
+            all_must_have_gaps = []
+            all_nice_to_have_gaps = []
             for a in apps:
-                all_gaps.extend(a.must_have_gaps)
-                all_gaps.extend(a.nice_to_have_gaps)
+                all_must_have_gaps.extend(a.must_have_gaps)
+                all_nice_to_have_gaps.extend(a.nice_to_have_gaps)
+            
             gap_counts: Dict[str, int] = {}
-            for g in all_gaps:
+            for g in all_must_have_gaps + all_nice_to_have_gaps:
                 gap_counts[g] = gap_counts.get(g, 0) + 1
             top_gaps = sorted(gap_counts.items(), key=lambda x: -x[1])[:5]
+            
+            # Collect all job titles and companies for analysis
+            job_titles = [a.job_title for a in apps]
+            companies = [a.company for a in apps]
+            high_match_jobs = [a.job_title for a in apps if a.score >= 70]
+            low_match_jobs = [a.job_title for a in apps if a.score < 50]
             
             # Recent applications
             recent = apps[-5:][::-1]  # Last 5, newest first
             recent_lines = []
             for a in recent:
                 emoji = "✅" if a.recommendation == "apply" else ("⚡" if a.recommendation == "apply_with_prep" else "🔄")
-                recent_lines.append(f"- {emoji} **{a.job_title[:40]}** ({a.score}%)")
+                recent_lines.append(f"- {emoji} **{a.job_title[:40]}** at {a.company[:20]} ({a.score}%)")
             
+            # Build profile stats section
             profile_view = (
                 "## 📊 My Profile\n\n"
                 f"**Applications Analyzed:** {total}\n"
@@ -1541,13 +1577,78 @@ Please provide your full, detailed recommendation now."""
                 f"- 🔄 Consider alternatives: {alt_count}\n\n"
             )
             
+            # Generate AI-powered profile insights if we have enough data
+            if total >= 2:
+                profile_view += "---\n\n## 🎯 Profile Insights\n\n"
+                
+                try:
+                    # Create a summary prompt for the LLM
+                    profile_data = {
+                        "total_applications": total,
+                        "avg_score": avg_score,
+                        "job_titles": job_titles,
+                        "companies": companies,
+                        "high_match_jobs": high_match_jobs,
+                        "low_match_jobs": low_match_jobs,
+                        "recurring_gaps": [g for g, c in top_gaps],
+                        "recommendations": {
+                            "apply": apply_count,
+                            "apply_with_prep": prep_count,
+                            "consider_alternatives": alt_count
+                        }
+                    }
+                    
+                    insights_prompt = f"""Based on this job application history, provide a brief profile analysis:
+
+Application Data:
+- Jobs analyzed: {job_titles}
+- Companies: {companies}
+- High match jobs (70%+): {high_match_jobs if high_match_jobs else 'None yet'}
+- Low match jobs (<50%): {low_match_jobs if low_match_jobs else 'None yet'}  
+- Recurring skill gaps: {[g for g, c in top_gaps] if top_gaps else 'None identified'}
+- Apply recommendations: {apply_count}, Apply with prep: {prep_count}, Consider alternatives: {alt_count}
+
+Write a concise profile analysis with these sections (2-3 sentences each):
+
+**🎭 Role Preferences:** What types of roles does this person typically pursue?
+
+**✨ Strong Fit Roles:** Based on match scores, what role types suit them best?
+
+**⚠️ Stretch Roles:** What role types seem to be reaches based on current skills?
+
+**📚 Skills to Develop:** What skills keep appearing as gaps across applications?
+
+**💪 Core Strengths:** What skills/experiences seem consistently valued?
+
+Keep it encouraging but honest. Use bullet points within sections."""
+
+                    # Use the brain agent to generate insights
+                    messages = [ChatMessage(role=Role.USER, contents=[TextContent(text=insights_prompt)])]
+                    insights_response = await self._brain.invoke(messages)
+                    insights_text = ""
+                    for content in insights_response.contents:
+                        if hasattr(content, 'text'):
+                            insights_text += content.text
+                    
+                    if insights_text:
+                        profile_view += insights_text + "\n\n"
+                    
+                except Exception as e:
+                    logger.warning(f"[PROFILE] Failed to generate AI insights: {e}")
+                    # Fall back to simple insights
+                    profile_view += (
+                        "**🎭 Role Preferences:** " + ", ".join(set(job_titles[:3])) + "\n\n"
+                    )
+                
+                profile_view += "---\n\n"
+            
             if top_gaps:
-                profile_view += "**Recurring Gaps to Address:**\n"
+                profile_view += "**🔄 Recurring Gaps to Address:**\n"
                 for gap, count in top_gaps:
                     profile_view += f"- {gap[:50]} ({count}x)\n"
                 profile_view += "\n"
             
-            profile_view += "**Recent Applications:**\n" + "\n".join(recent_lines)
+            profile_view += "**📋 Recent Applications:**\n" + "\n".join(recent_lines)
         
         menu = self._build_recommendation_menu(sections)
         response = f"{profile_view}\n\n---\n\n{menu}"
