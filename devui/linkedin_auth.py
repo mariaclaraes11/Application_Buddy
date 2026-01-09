@@ -16,30 +16,16 @@ async def authenticate():
     """Open browser for manual LinkedIn login, then save session."""
     AUTH_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
     
-    print("Opening browser for LinkedIn login...")
+    print("Opening Microsoft Edge for LinkedIn login...")
     print("Please log in manually, then the session will be saved.\n")
     
     async with async_playwright() as p:
-        # Try to use system browser first (works better in WSL)
-        try:
-            browser = await p.chromium.launch(
-                headless=False,
-                channel="msedge",  # Use Windows Edge
-                args=['--no-sandbox']
-            )
-        except:
-            try:
-                browser = await p.chromium.launch(
-                    headless=False,
-                    channel="chrome",  # Try Chrome
-                    args=['--no-sandbox']
-                )
-            except:
-                # Fall back to Playwright's Chromium
-                browser = await p.chromium.launch(
-                    headless=False,
-                    args=['--no-sandbox', '--disable-gpu']
-                )
+        # Use Windows Edge via WSL
+        browser = await p.chromium.launch(
+            headless=False,
+            channel="msedge",
+            args=['--no-sandbox']
+        )
         
         context = await browser.new_context()
         page = await context.new_page()

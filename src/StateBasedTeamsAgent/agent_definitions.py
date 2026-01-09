@@ -503,7 +503,7 @@ OUTPUT FORMAT:
 
 **IMPORTANT - START WITH THIS AI DISCLAIMER:**
 Begin your response with a brief, friendly acknowledgment of AI limitations:
-"Here's my analysis based on what you've shared. Take it as one data point in your decision - you know your situation, the company culture, and your career goals better than any AI could! 🎯"
+"Here's my analysis based on what you've shared. Take it as one data point in your decision - you know your situation, the company culture, and your career goals better than any AI could!"
 
 ## Should You Apply?
 **Recommendation:** [STRONG APPLY/APPLY/CAUTIOUS APPLY/SKIP]
@@ -526,7 +526,7 @@ Begin your response with a brief, friendly acknowledgment of AI limitations:
 - [Examples of your approach, style, or motivations relevant to this position]
 - [Gaps that were addressed/clarified during our chat]
 
-## 📝 What to Pay Some Attention To
+## What to Pay Some Attention To
 These aren't dealbreakers - just areas where a little preparation could strengthen your application:
 
 - [Specific gap with constructive suggestion on how to address it]
@@ -591,7 +591,7 @@ DON'T just summarize your resume. Instead:
 - Explain how you've solved that exact problem before
 - Show you understand THEIR challenges and can help
 
-##  Networking Strategy (Bypass the ATS!)
+## Networking Strategy (Bypass the ATS!)
 
 Not all jobs are posted publicly. A personal connection can make a HUGE difference.
 

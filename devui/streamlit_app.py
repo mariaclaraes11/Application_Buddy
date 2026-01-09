@@ -16,9 +16,18 @@ APPINSIGHTS_CONNECTION_STRING = "InstrumentationKey=71316b67-c79b-4f9d-bbde-16ab
 
 st.set_page_config(page_title="Application Buddy", page_icon="💼", layout="wide")
 
-# Custom CSS for subtle feedback expander
+# Custom CSS for subtle feedback expander and wider sidebar
 st.markdown("""
 <style>
+    /* Use sans-serif font throughout */
+    html, body, [class*="css"] {
+        font-family: 'Myriad Pro', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+    /* Make sidebar wider */
+    [data-testid="stSidebar"] {
+        min-width: 350px;
+        max-width: 400px;
+    }
     /* Make feedback expander more subtle */
     [data-testid="stExpander"] {
         background-color: transparent;
@@ -27,6 +36,31 @@ st.markdown("""
     [data-testid="stExpander"] summary {
         font-size: 0.85em;
         color: rgba(128, 128, 128, 0.7);
+    }
+    /* LinkedIn-style job cards */
+    .job-card {
+        display: flex;
+        align-items: center;
+        padding: 12px 16px;
+        border: 1px solid #e0e0e0;
+        border-radius: 8px;
+        background: white;
+        margin-bottom: 8px;
+        cursor: pointer;
+        transition: background-color 0.2s;
+    }
+    .job-card:hover {
+        background-color: #f5f5f5;
+    }
+    .job-card-icon {
+        color: #666;
+        margin-right: 12px;
+        font-size: 18px;
+    }
+    .job-card-text {
+        color: #333;
+        font-size: 14px;
+        font-weight: 500;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -128,35 +162,6 @@ def send_message(msg: str):
     except Exception as e:
         st.session_state.messages.append({"role": "assistant", "content": f"Error: {e}"})
 
-# New conversation
-col1, col2 = st.columns(2)
-with col1:
-    if st.button("🔄 New Conversation"):
-        try:
-            openai_client.responses.create(
-                input=[{"type": "message", "role": "user", "content": "reset"}],
-                extra_body={"agent": {"name": agent.name, "type": "agent_reference"}},
-            )
-        except: pass
-        st.session_state.messages = []
-        st.session_state.pending_file = None
-        st.session_state.file_already_sent = False
-        st.session_state.uploader_key += 1
-        st.session_state.feedback_given = set()
-        st.rerun()
-
-with col2:
-    if st.button("🗑️ Reset Profile"):
-        try:
-            response = openai_client.responses.create(
-                input=[{"type": "message", "role": "user", "content": "reset profile"}],
-                extra_body={"agent": {"name": agent.name, "type": "agent_reference"}},
-            )
-            st.session_state.messages.append({"role": "assistant", "content": response.output_text})
-        except Exception as e:
-            st.error(f"Failed to reset profile: {e}")
-        st.rerun()
-
 # Chat history with inline feedback
 for i, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
@@ -202,9 +207,38 @@ if st.session_state.messages:
             send_message(command)
             st.rerun()
 
-# Sidebar for file upload
+# Sidebar for file upload and controls
 with st.sidebar:
-    st.markdown("### 📎 Attach CV")
+    # Conversation controls at top
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("↶ New", use_container_width=True):
+            try:
+                openai_client.responses.create(
+                    input=[{"type": "message", "role": "user", "content": "reset"}],
+                    extra_body={"agent": {"name": agent.name, "type": "agent_reference"}},
+                )
+            except: pass
+            st.session_state.messages = []
+            st.session_state.pending_file = None
+            st.session_state.file_already_sent = False
+            st.session_state.uploader_key += 1
+            st.session_state.feedback_given = set()
+            st.rerun()
+    with col2:
+        if st.button("⟳ Reset Profile", use_container_width=True):
+            try:
+                response = openai_client.responses.create(
+                    input=[{"type": "message", "role": "user", "content": "reset profile"}],
+                    extra_body={"agent": {"name": agent.name, "type": "agent_reference"}},
+                )
+                st.session_state.messages.append({"role": "assistant", "content": response.output_text})
+            except Exception as e:
+                st.error(f"Failed to reset profile: {e}")
+            st.rerun()
+    
+    st.markdown("---")
+    st.markdown("### + Attach CV")
     
     # File uploader with dynamic key
     uploaded = st.file_uploader(
@@ -236,7 +270,7 @@ with st.sidebar:
             st.rerun()
     elif st.session_state.file_already_sent:
         st.info("CV already sent ✓")
-        if st.button("📎 Attach new CV"):
+        if st.button("Attach new CV"):
             st.session_state.file_already_sent = False
             st.session_state.pending_file = None
             st.session_state.uploader_key += 1
@@ -244,35 +278,53 @@ with st.sidebar:
     
     # Saved Jobs section
     st.markdown("---")
-    st.markdown("### 💼 Saved Jobs")
+    # Bookmark icon as inline SVG (small, grey)
+    bookmark_svg = '''<svg width="14" height="18" viewBox="0 0 24 32" fill="#888" xmlns="http://www.w3.org/2000/svg" style="vertical-align: middle; margin-right: 6px;"><path d="M0 0h24v32l-12-8-12 8V0z"/></svg>'''
+    st.markdown(f"### {bookmark_svg} Saved Jobs", unsafe_allow_html=True)
     
     # Initialize saved jobs in session state
     if "saved_jobs" not in st.session_state:
         st.session_state.saved_jobs = []
     
     # Sync button
-    if st.button("🔄 Sync from LinkedIn", help="Opens browser to scrape your saved jobs"):
+    if st.button("Sync from LinkedIn", help="Opens browser to scrape your saved jobs"):
         with st.spinner("Opening LinkedIn..."):
             try:
                 from linkedin_savedjobs import scrape_jobs_sync
-                jobs = scrape_jobs_sync(max_jobs=20)
+                jobs = scrape_jobs_sync(max_jobs=10)
                 st.session_state.saved_jobs = jobs
                 st.success(f"Synced {len(jobs)} jobs!")
             except Exception as e:
                 st.error(f"Error: {e}")
     
-    # Display job buttons
+    # Display job cards
     if st.session_state.saved_jobs:
         for i, job in enumerate(st.session_state.saved_jobs):
-            col1, col2 = st.columns([4, 1])
-            with col1:
-                if st.button(
-                    f"🏢 {job['company']}\n{job['title'][:30]}...",
-                    key=f"job_{i}",
-                    use_container_width=True
-                ):
+            # Create a container that looks like LinkedIn job card
+            with st.container():
+                # Use HTML for cleaner styling
+                card_html = f"""
+                <div style="padding: 12px 0; border-bottom: 1px solid #eee; cursor: pointer;">
+                    <div style="font-weight: 600; font-size: 14px; color: #000;">{job['title']}</div>
+                    <div style="font-size: 13px; color: #666;">{job['company']}</div>
+                    <div style="font-size: 12px; color: #888;">{job.get('location', '')}</div>
+                </div>
+                """
+                st.markdown(card_html, unsafe_allow_html=True)
+                
+                if st.button("Select", key=f"job_{i}", type="secondary"):
+                    # Fetch full description when clicked
+                    with st.spinner("Loading job details..."):
+                        try:
+                            from linkedin_savedjobs import fetch_job_description_sync
+                            full_desc = fetch_job_description_sync(job.get('url', ''))
+                            if full_desc:
+                                job['description'] = full_desc
+                        except Exception as e:
+                            st.warning(f"Could not fetch full description: {e}")
+                    
                     # Send job to chat
-                    job_text = f"**{job['title']}** at **{job['company']}**\n\n{job['description']}"
+                    job_text = f"**{job['title']}** at **{job['company']}**\n\nLocation: {job.get('location', 'N/A')}\n\n{job['description']}"
                     st.session_state.pending_job = job_text
                     st.rerun()
     else:
